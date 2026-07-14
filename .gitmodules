@@ -1,0 +1,22 @@
+[submodule "src/aws-robomaker-bookstore-world"]
+	path = src/aws-robomaker-bookstore-world
+	url = https://github.com/dHonerkamp/aws-robomaker-bookstore-world.git
+[submodule "src/bio_ik"]
+	path = src/bio_ik
+	url = https://github.com/TAMS-Group/bio_ik.git
+[submodule "src/humanoid_msgs"]
+	path = src/humanoid_msgs
+	url = https://github.com/ahornung/humanoid_msgs.git
+[submodule "src/navigation_layers"]
+	path = src/navigation_layers
+	url = https://github.com/dHonerkamp/navigation_layers.git
+[submodule "src/pal_msgs"]
+	path = src/pal_msgs
+	url = https://github.com/pal-robotics/pal_msgs.git
+[submodule "src/tf_lookup"]
+	path = src/tf_lookup
+	url = https://github.com/pal-robotics/tf_lookup.git
+[submodule "src/tmc_control_msgs"]
+	path = src/tmc_control_msgs
+	url = https://github.com/hsr-project/tmc_control_msgs.git
+

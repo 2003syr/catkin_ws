@@ -1,0 +1,39 @@
+joint_names:
+  - joint1
+  - joint2
+  - joint3
+  - joint4
+  - joint5
+  - joint6
+
+joint_limits:
+  joint1: [-3.14, 3.14]
+  joint2: [-1.57, 1.57]
+  joint3: [-2.50, 2.50]
+  joint4: [-3.14, 3.14]
+  joint5: [-1.57, 1.57]
+  joint6: [-3.14, 3.14]
+
+desired_tag_z: 0.60
+
+pos_error_scale: 1.0
+angle_error_scale: 3.1416
+obstacle_safe_distance: 1.5
+
+laser_sectors:
+  front: [-15, 15]
+  front_left: [15, 60]
+  left: [60, 120]
+  back_left: [120, 165]
+  back: [165, -165]
+  back_right: [-165, -120]
+  right: [-120, -60]
+  front_right: [-60, -15]
+
+max_subgoal_xyz: 0.10
+max_subgoal_rpy: 0.20
+
+fake_high_goal_k_pos: 0.25
+fake_high_goal_k_rpy: 0.20
+
+log_file: "logs/hrl_state_log.csv"

@@ -1,0 +1,15 @@
+<launch>
+  <node pkg="hrl_interface"
+        type="fake_sensor_publisher.py"
+        name="fake_sensor_publisher"
+        output="screen">
+    <param name="rate" value="20.0"/>
+  </node>
+
+  <node pkg="hrl_interface"
+        type="hrl_state_collector.py"
+        name="hrl_state_collector"
+        output="screen">
+    <rosparam command="load" file="$(find hrl_interface)/config/hrl_state_config.yaml"/>
+  </node>
+</launch>

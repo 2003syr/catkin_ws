@@ -1,0 +1,26 @@
+# Catkin build products
+/build/
+/build_py3/
+/devel/
+/devel_py3/
+/install/
+/.catkin_tools/
+
+# Runtime output
+**/logs/
+*.bag
+*.csv
+*.log
+
+# Python/editor caches
+**/__pycache__/
+*.py[cod]
+.idea/
+.vscode/
+
+# Local archives and accidental shell artifacts
+*.zip
+/from
+/import
+/PY
+
