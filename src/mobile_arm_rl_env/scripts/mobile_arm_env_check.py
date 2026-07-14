@@ -10,8 +10,12 @@ from std_msgs.msg import Float64
 
 
 class MobileArmReachEnv(object):
-    def __init__(self):
-        rospy.init_node("mobile_arm_reach_env_check", anonymous=True)
+    OBS_DIM = 46
+    ACTION_DIM = 10
+
+    def __init__(self, init_ros_node=True):
+        if init_ros_node:
+            rospy.init_node("mobile_arm_reach_env_check", anonymous=True)
 
         # =========================
         # 1. 坐标系参数
@@ -452,6 +456,13 @@ class MobileArmReachEnv(object):
             scan_info
         ])
 
+        if len(obs_vec) != self.OBS_DIM:
+            raise RuntimeError(
+                "Observation dim changed: got {}, expected {}".format(
+                    len(obs_vec), self.OBS_DIM
+                )
+            )
+
         obs = {
             "obs_vec": obs_vec,
 
@@ -564,6 +575,10 @@ class MobileArmReachEnv(object):
         }
 
         return obs, reward, done, info
+
+    def stop(self):
+        """Stop every controller. Safe to call from a finally block."""
+        self.publish_zero_cmd()
 
 
 if __name__ == "__main__":

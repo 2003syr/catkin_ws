@@ -36,3 +36,46 @@ source devel/setup.bash
 
 项目设计背景和开发约束见 [Mobile_Arm_HRL_AGENTS.md](Mobile_Arm_HRL_AGENTS.md)。
 
+## 规则型 HRL v2
+
+第二个版本实现了用于验证接口的任务驱动分层框架：
+
+```text
+46维 observation
+  -> 高层任务选择（BASE_APPROACH / ARM_REACH / RECOVERY）
+  -> 6维局部子目标与底座/机械臂优先级
+  -> 规则低层策略
+  -> 10维归一化动作
+  -> 原有安全过滤
+  -> ROS velocity controllers
+```
+
+高层默认每 10 个低层控制步更新一次，并使用进入/退出两个距离阈值避免任务模式抖动。规则低层仅用于验证任务切换、时间尺度和安全执行链路，不作为最终逆运动学或学习控制器。
+
+启动方式：
+
+```bash
+# 终端 1
+source devel/setup.bash
+roslaunch mobile_arm_description gazebo_control.launch
+
+# 终端 2
+source devel/setup.bash
+roslaunch mobile_arm_rl_env rule_based_hrl.launch
+```
+
+运行不依赖 ROS/Gazebo 的基础逻辑测试：
+
+```bash
+python src/mobile_arm_rl_env/test/test_hrl_framework.py
+```
+
+关键实现：
+
+- `scripts/hrl/high_level_command.py`：稳定的任务命令协议。
+- `scripts/hrl/rule_based_high_policy.py`：可解释的任务切换和可行子目标裁剪。
+- `scripts/hrl/rule_based_low_policy.py`：用于闭环接线验证的低层规则策略。
+- `scripts/hrl/hierarchical_env.py`：高低层双时间尺度调度。
+- `scripts/run_rule_based_hrl.py`：ROS 运行入口。
+
+当前限制：episode reset 仍只清零控制指令和计数；障碍输入仍是占位值；规则低层不是 Jacobian 逆解。后续应先验证 Gazebo 控制方向，再用目标条件强化学习策略替换规则低层。

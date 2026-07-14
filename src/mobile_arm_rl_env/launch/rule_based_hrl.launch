@@ -1,0 +1,24 @@
+<launch>
+    <param name="/use_sim_time" value="true" />
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="world_to_base_pub"
+          args="0 0 0 0 0 0 world base_link 100" />
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="target_tf_pub"
+          args="1.5 0.0 0.8 0 0 0 world target_frame 100" />
+
+    <node pkg="mobile_arm_rl_env" type="run_rule_based_hrl.py"
+          name="rule_based_mobile_arm_hrl" output="screen">
+        <param name="base_frame" value="base_link" />
+        <param name="ee_frame" value="link6" />
+        <param name="target_frame" value="target_frame" />
+        <param name="high_interval" value="10" />
+        <param name="arm_enter_distance" value="0.80" />
+        <param name="arm_exit_distance" value="1.00" />
+        <param name="min_joint_margin" value="0.08" />
+        <param name="max_position_subgoal" value="0.10" />
+    </node>
+</launch>
+
