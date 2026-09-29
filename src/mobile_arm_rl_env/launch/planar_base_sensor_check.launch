@@ -1,0 +1,16 @@
+<launch>
+    <!-- Start mobile_arm_description/gazebo_planar_obstacles.launch first. -->
+    <node pkg="mobile_arm_rl_env"
+          type="verify_planar_sensors.py"
+          name="verify_planar_sensors"
+          output="screen"
+          required="true">
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="timeout" value="10.0" />
+        <param name="expected_obstacle_max" value="2.0" />
+        <param name="minimum_valid_clearance" value="0.20" />
+        <param name="scan_output_max" value="10.0" />
+        <rosparam param="collision_ignore_names">[ground_plane]</rosparam>
+    </node>
+</launch>

@@ -1,0 +1,48 @@
+<launch>
+    <!-- Start mobile_arm_description/gazebo_planar_control.launch first. -->
+    <arg name="episodes" default="20" />
+    <arg name="seed" default="123" />
+    <arg name="base_gain" default="5.0" />
+    <arg name="target_min_distance" default="0.40" />
+    <arg name="target_max_distance" default="1.20" />
+    <arg name="required_success_rate" default="0.90" />
+
+    <param name="/use_sim_time" value="true" />
+
+    <node pkg="mobile_arm_rl_env"
+          type="evaluate_rule_based_planar_base.py"
+          name="evaluate_rule_based_planar_base"
+          output="screen"
+          required="true">
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame" value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="base_gain" value="$(arg base_gain)" />
+        <param name="target_min_distance"
+               value="$(arg target_min_distance)" />
+        <param name="target_max_distance"
+               value="$(arg target_max_distance)" />
+        <param name="required_success_rate"
+               value="$(arg required_success_rate)" />
+
+        <param name="base_success_threshold" value="0.03" />
+        <param name="max_steps" value="300" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <param name="progress_reward_scale" value="10.0" />
+        <param name="success_reward" value="2.0" />
+        <param name="collision_penalty" value="2.0" />
+        <param name="time_penalty" value="0.01" />
+        <param name="action_penalty_scale" value="0.01" />
+        <param name="smoothness_penalty_scale" value="0.02" />
+        <param name="collision_distance" value="0.20" />
+        <param name="scan_clip" value="10.0" />
+    </node>
+</launch>

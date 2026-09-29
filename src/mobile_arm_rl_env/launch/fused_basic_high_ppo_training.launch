@@ -1,0 +1,42 @@
+<launch>
+    <!-- Minimal hierarchy: high PPO = 3 stages + 6-D subgoal; low PPO frozen. -->
+    <arg name="gui" default="false" />
+    <arg name="paused" default="false" />
+    <arg name="port" default="5565" />
+    <arg name="seed" default="789" />
+    <arg name="max_steps" default="3200" />
+    <!-- The rule teacher reached the 8/10 prerequisite gate at 80 low steps;
+         20 steps caused premature subgoal replacement and only 6/10. -->
+    <arg name="high_level_interval" default="80" />
+    <arg name="low_policy_type" default="residual_ppo" />
+    <arg name="low_policy_host" default="127.0.0.1" />
+    <arg name="low_policy_port" default="5573" />
+
+    <include file="$(find mobile_arm_rl_env)/launch/fused_high_ppo_training.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="port" value="$(arg port)" />
+        <arg name="seed" value="$(arg seed)" />
+        <arg name="max_steps" value="$(arg max_steps)" />
+        <arg name="high_level_interval" value="$(arg high_level_interval)" />
+        <arg name="low_policy_type" value="$(arg low_policy_type)" />
+        <arg name="low_policy_host" value="$(arg low_policy_host)" />
+        <arg name="low_policy_port" value="$(arg low_policy_port)" />
+        <arg name="basic_hierarchy" value="true" />
+        <arg name="terminal_option_contract" value="true" />
+        <arg name="terminal_ee_step" value="0.08" />
+        <!-- 0.20 has already passed deterministic validation.  Start the
+             remaining stage-gated curriculum at 0.40 and anneal to 1.00. -->
+        <arg name="terminal_student_blend" value="0.40" />
+        <!-- No hidden teacher-route shaping in the basic high-level task. -->
+        <arg name="high_path_progress_weight" value="0.0" />
+        <arg name="high_ee_progress_weight" value="10.0" />
+        <arg name="high_final_base_progress_weight" value="5.0" />
+        <arg name="high_final_yaw_progress_weight" value="2.0" />
+        <arg name="high_terminal_ee_progress_weight" value="20.0" />
+        <arg name="high_low_step_penalty" value="0.002" />
+        <arg name="high_option_stall_penalty" value="5.0" />
+        <arg name="high_invalid_terminal_penalty" value="2.0" />
+        <arg name="high_timeout_penalty" value="20.0" />
+    </include>
+</launch>

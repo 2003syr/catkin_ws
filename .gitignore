@@ -1,0 +1,42 @@
+# Catkin build products
+/build/
+/build_py3/
+/devel/
+/devel_py3/
+/install/
+/.catkin_tools/
+
+# Runtime output
+**/logs/
+**/diagnostics/
+*.bag
+*.csv
+*.log
+*.npy
+*.npz
+*.pt
+*.pth
+
+# Python/editor caches
+**/__pycache__/
+*.py[cod]
+.idea/
+.vscode/
+
+# Local archives and accidental shell artifacts
+*.zip
+*.tar
+*.tar.gz
+/from
+/import
+/PY
+
+# Local workspaces, backups, and reference material
+/.codex_build/
+/.uv-cache/
+/backups/
+/catkin_ws_clean_20260714/
+/local_backups/
+/mobile-rl-main/
+/outputs/
+/references/

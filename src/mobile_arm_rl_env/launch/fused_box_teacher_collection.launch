@@ -1,0 +1,88 @@
+<launch>
+    <!-- Collect successful 66-D/8-D teacher demonstrations on the box route. -->
+    <arg name="gui" default="true" />
+    <arg name="episodes" default="30" />
+    <arg name="max_attempts" default="45" />
+    <arg name="seed" default="123" />
+    <arg name="detour_side" default="0.0" />
+    <arg name="output_path"
+         default="/tmp/mobile_arm_rl_training/fused_box_teacher_30ep.npz" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="false" />
+        <arg name="obstacle_x_offset" value="0.0" />
+        <arg name="obstacle_y_offset" value="0.0" />
+        <arg name="disable_arm_collisions" value="false" />
+        <arg name="enable_arm_contacts" value="true" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="collect_fused_low_teacher_dataset.py"
+          name="collect_fused_box_teacher_dataset"
+          output="screen"
+          required="true">
+        <param name="environment_type" value="box_detour" />
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="max_attempts" value="$(arg max_attempts)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="detour_side" value="$(arg detour_side)" />
+        <param name="output_path" value="$(arg output_path)" />
+        <param name="minimum_episode_samples" value="20" />
+        <param name="log_interval" value="25" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="arm_contact_topic" value="/arm_contacts" />
+        <param name="target_frame" value="fused_box_detour_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <rosparam param="reset_base_positions">[0.0, 0.0, 1.5708]</rosparam>
+        <rosparam param="reset_arm_positions">
+            [0.0, -0.30, 0.03, 0.0, 0.03, 0.0]
+        </rosparam>
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="target_min_chassis_clearance" value="0.015" />
+        <param name="success_threshold" value="0.05" />
+        <param name="max_steps" value="1200" />
+
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_settle_window" value="0.50" />
+        <param name="reset_drift_tolerance" value="0.002" />
+        <param name="reset_attempts" value="3" />
+        <param name="idle_hold_reset_service"
+               value="/arm_idle_position_hold/reset_targets" />
+        <param name="reset_timeout" value="7.0" />
+
+        <rosparam param="box_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="box_size_xy">[0.20, 0.32]</rosparam>
+        <rosparam param="final_base_goal_xy">[1.60, -0.13]</rosparam>
+        <param name="base_half_length" value="0.56" />
+        <param name="base_half_width" value="0.10" />
+        <param name="path_clearance" value="0.15" />
+        <param name="waypoint_tolerance" value="0.10" />
+        <param name="final_base_position_tolerance" value="0.03" />
+        <param name="final_base_yaw_tolerance" value="0.08" />
+        <param name="terminal_pose_enter_position_tolerance" value="0.03" />
+        <param name="terminal_pose_exit_position_tolerance" value="0.06" />
+        <param name="terminal_pose_stable_cycles" value="3" />
+        <param name="arm_finish_stall_cycles" value="20" />
+        <param name="arm_finish_joint_reference_gain" value="0.35" />
+        <param name="arm_box_release_margin" value="0.02" />
+
+        <param name="base_linear_action_scale" value="0.25" />
+        <param name="base_yaw_action_scale" value="0.25" />
+        <param name="teacher_base_gain" value="2.5" />
+        <param name="teacher_yaw_gain" value="1.5" />
+        <param name="teacher_arm_gain" value="1.0" />
+        <param name="teacher_arm_start_distance" value="0.30" />
+        <param name="teacher_base_stop_distance" value="0.04" />
+        <param name="teacher_heading_slow_angle" value="0.70" />
+        <param name="teacher_max_cartesian_speed" value="0.05" />
+        <param name="teacher_dls_damping" value="0.03" />
+    </node>
+</launch>

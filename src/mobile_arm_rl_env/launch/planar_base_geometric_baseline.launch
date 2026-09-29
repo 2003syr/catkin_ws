@@ -1,0 +1,126 @@
+<launch>
+    <!--
+      Non-learning acceptance baseline:
+        LaserScan -> local occupancy grid
+        -> 3 footprint-aware SE(2) lattice candidates
+        -> deterministic regulated path tracker [v, omega]
+        -> emergency-only existing safety shield.
+    -->
+    <arg name="gui" default="true" />
+    <arg name="episodes" default="9" />
+    <arg name="required_success_rate" default="1.0" />
+    <arg name="maximum_collisions" default="0" />
+    <arg name="seed" default="123" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+        <arg name="obstacle_x_offset" value="0.50" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="geometric_planar_baseline.py"
+          name="geometric_planar_baseline"
+          output="screen"
+          required="true">
+        <param name="seed" value="$(arg seed)" />
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="required_success_rate"
+               value="$(arg required_success_rate)" />
+        <param name="maximum_collisions"
+               value="$(arg maximum_collisions)" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="scan_bin_count" value="36" />
+        <param name="scan_output_max" value="10.0" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame"
+               value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <param name="base_action_scale" value="0.25" />
+
+        <rosparam param="targets">
+          [[1.70, -0.13], [1.70, 0.20], [1.70, -0.48],
+           [1.45, 0.55], [1.45, -0.70], [1.00, 0.60],
+           [1.00, -0.70], [-0.80, 0.40], [-0.80, -0.40]]
+        </rosparam>
+        <rosparam param="scenario_labels">
+          [frontal, frontal, frontal, offset, offset,
+           free, free, free, free]
+        </rosparam>
+        <param name="target_min_distance" value="0.75" />
+        <param name="target_max_distance" value="1.79" />
+        <rosparam param="target_exclusion_circles">
+          [1.35, -0.13, 0.28]
+        </rosparam>
+        <param name="target_sample_attempts" value="300" />
+        <param name="subgoal_success_threshold" value="0.08" />
+        <param name="max_steps" value="1200" />
+        <param name="baseline_max_steps" value="1200" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <!-- Occupancy map and footprint-aware SE(2) lattice. -->
+        <param name="planning_frame" value="world" />
+        <param name="map_resolution" value="0.05" />
+        <param name="map_width" value="5.0" />
+        <param name="map_height" value="5.0" />
+        <param name="map_max_ray_length" value="3.0" />
+        <param name="planner_heading_bins" value="16" />
+        <param name="planner_translation_cells" value="2" />
+        <param name="planner_allow_reverse" value="true" />
+        <param name="planner_reverse_cost" value="2.5" />
+        <param name="planner_rotation_cost_radius" value="0.30" />
+        <param name="planner_goal_tolerance" value="0.07" />
+        <param name="planner_footprint_half_length" value="0.56" />
+        <param name="planner_footprint_half_width" value="0.10" />
+        <param name="planner_safety_margin" value="0.08" />
+        <param name="planner_side_detour_offset" value="0.55" />
+        <param name="planner_side_bias" value="2.0" />
+        <param name="planner_maximum_expansions" value="120000" />
+        <param name="planner_replan_interval" value="50" />
+        <param name="maximum_planning_failures" value="20" />
+
+        <!-- Deterministic nonholonomic tracker. -->
+        <param name="tracker_position_tolerance" value="0.07" />
+        <param name="tracker_waypoint_tolerance" value="0.065" />
+        <param name="tracker_yaw_tolerance" value="0.16" />
+        <param name="tracker_turn_in_place_angle" value="0.30" />
+        <param name="tracker_slow_distance" value="0.35" />
+        <param name="tracker_heading_gain" value="1.8" />
+        <param name="tracker_path_yaw_gain" value="0.35" />
+        <param name="tracker_minimum_linear_fraction" value="0.18" />
+        <param name="tracker_linear_slew_limit" value="0.10" />
+        <param name="tracker_angular_slew_limit" value="0.16" />
+
+        <!-- Existing shield is deliberately only the final emergency layer. -->
+        <param name="collision_distance" value="0.16" />
+        <param name="scan_clip" value="10.0" />
+        <param name="shield_enabled" value="true" />
+        <param name="shield_footprint_half_length" value="0.56" />
+        <param name="shield_footprint_half_width" value="0.10" />
+        <param name="shield_min_clearance" value="0.18" />
+        <param name="shield_reaction_time" value="0.05" />
+        <param name="shield_braking_deceleration" value="0.30" />
+        <param name="shield_rotation_clearance" value="0.16" />
+        <param name="shield_front_half_angle" value="0.610865" />
+        <param name="shield_penalty_scale" value="0.0" />
+        <param name="shield_streak_penalty_scale" value="0.0" />
+        <param name="escape_turn_reward_scale" value="0.0" />
+
+        <!-- Reward is diagnostic only in this non-learning baseline. -->
+        <param name="progress_reward_scale" value="4.0" />
+        <param name="path_progress_reward_scale" value="8.0" />
+        <param name="waypoint_reward" value="0.25" />
+        <param name="success_reward" value="5.0" />
+        <param name="collision_penalty" value="5.0" />
+        <param name="timeout_penalty" value="2.0" />
+        <param name="time_penalty" value="0.005" />
+        <param name="action_penalty_scale" value="0.0" />
+        <param name="smoothness_penalty_scale" value="0.0" />
+        <param name="clearance_penalty_scale" value="0.0" />
+    </node>
+</launch>

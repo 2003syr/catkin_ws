@@ -1,0 +1,131 @@
+<launch>
+    <!-- Rule safe-waypoint high layer + 5-D subgoal residual PPO low layer. -->
+    <arg name="gui" default="false" />
+    <arg name="paused" default="false" />
+    <arg name="port" default="5564" />
+    <arg name="seed" default="789" />
+    <arg name="detour_side" default="0.0" />
+    <arg name="max_steps" default="3000" />
+    <arg name="obstacle_x_offset" default="0.0" />
+    <arg name="obstacle_y_offset" default="0.0" />
+    <arg name="residual_base_scale" default="0.02" />
+    <arg name="residual_cartesian_scale" default="0.002" />
+    <arg name="joint_limit_avoidance_gain" default="0.35" />
+    <arg name="joint_limit_avoidance_activation" default="1.5" />
+    <arg name="reset_pre_brake_time" default="0.40" />
+    <arg name="reset_configuration_repeats" default="2" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="obstacle_x_offset" value="$(arg obstacle_x_offset)" />
+        <arg name="obstacle_y_offset" value="$(arg obstacle_y_offset)" />
+        <arg name="disable_arm_collisions" value="false" />
+        <arg name="enable_arm_contacts" value="true" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="fused_low_residual_env_server.py"
+          name="fused_box_subgoal_residual_environment_server"
+          output="screen"
+          required="true">
+        <env name="PYTHONPATH"
+             value="$(find mobile_arm_rl_env)/scripts:$(env PYTHONPATH)" />
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="environment_type" value="box_subgoal" />
+        <param name="enable_teacher" value="true" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="arm_contact_topic" value="/arm_contacts" />
+        <param name="target_frame" value="fused_box_detour_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <rosparam param="reset_base_positions">[0.0, 0.0, 1.5708]</rosparam>
+        <rosparam param="reset_arm_positions">
+            [0.0, -0.30, 0.03, 0.0, 0.03, 0.0]
+        </rosparam>
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="target_min_chassis_clearance" value="0.015" />
+        <param name="success_threshold" value="0.05" />
+        <param name="max_steps" value="$(arg max_steps)" />
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_settle_window" value="0.50" />
+        <param name="reset_drift_tolerance" value="0.002" />
+        <param name="reset_attempts" value="3" />
+        <param name="reset_pre_brake_time"
+               value="$(arg reset_pre_brake_time)" />
+        <param name="reset_configuration_repeats"
+               value="$(arg reset_configuration_repeats)" />
+        <param name="idle_hold_reset_service"
+               value="/arm_idle_position_hold/reset_targets" />
+        <param name="reset_timeout" value="7.0" />
+
+        <rosparam param="box_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="box_size_xy">[0.20, 0.32]</rosparam>
+        <!-- Scenario reset moves this one real Gazebo model.  Its physical
+             size stays fixed until a model-pool implementation is added. -->
+        <param name="obstacle_model_name"
+               value="planar_avoidance_obstacle" />
+        <param name="enable_obstacle_repositioning" value="true" />
+        <rosparam param="obstacle_geometry_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="obstacle_hidden_center_xy">[-100.0, -100.0]</rosparam>
+        <rosparam param="final_base_goal_xy">[1.60, -0.13]</rosparam>
+        <param name="base_half_length" value="0.56" />
+        <param name="base_half_width" value="0.10" />
+        <param name="path_clearance" value="0.15" />
+        <param name="waypoint_tolerance" value="0.10" />
+        <param name="final_base_position_tolerance" value="0.03" />
+        <param name="final_base_yaw_tolerance" value="0.08" />
+        <param name="terminal_pose_enter_position_tolerance" value="0.03" />
+        <param name="terminal_pose_exit_position_tolerance" value="0.06" />
+        <param name="terminal_pose_stable_cycles" value="3" />
+        <param name="arm_finish_stall_cycles" value="20" />
+        <param name="arm_finish_joint_reference_gain" value="0.35" />
+        <param name="arm_box_release_margin" value="0.02" />
+        <param name="detour_side" value="$(arg detour_side)" />
+        <param name="enable_student_stall_takeover" value="false" />
+        <param name="box_collision_penalty" value="8.0" />
+        <param name="box_timeout_penalty" value="1.0" />
+        <param name="box_path_reward_scale" value="5.0" />
+        <param name="box_ee_reward_scale" value="2.0" />
+        <param name="box_yaw_reward_scale" value="2.0" />
+        <param name="box_time_penalty" value="0.001" />
+        <param name="box_success_bonus" value="20.0" />
+
+        <param name="base_linear_action_scale" value="0.25" />
+        <param name="base_yaw_action_scale" value="0.25" />
+        <param name="teacher_base_gain" value="2.5" />
+        <param name="teacher_yaw_gain" value="1.5" />
+        <param name="teacher_arm_gain" value="1.0" />
+        <param name="teacher_arm_start_distance" value="0.30" />
+        <param name="teacher_base_stop_distance" value="0.04" />
+        <param name="teacher_subgoal_base_stop_distance" value="0.02" />
+        <param name="teacher_heading_slow_angle" value="0.70" />
+        <param name="teacher_max_cartesian_speed" value="0.05" />
+        <param name="teacher_dls_damping" value="0.03" />
+        <!-- Terminal-only DLS null-space task.  Other low-level launch files
+             keep the teacher default of zero and retain historical behavior. -->
+        <param name="teacher_joint_limit_avoidance_gain"
+               value="$(arg joint_limit_avoidance_gain)" />
+        <param name="teacher_joint_limit_avoidance_activation"
+               value="$(arg joint_limit_avoidance_activation)" />
+
+        <!-- Conservative residual authority; the rule tracker remains dominant. -->
+        <param name="residual_base_scale"
+               value="$(arg residual_base_scale)" />
+        <param name="residual_cartesian_scale"
+               value="$(arg residual_cartesian_scale)" />
+        <param name="subgoal_high_level_interval" value="20" />
+        <param name="subgoal_stable_cycles" value="3" />
+        <param name="subgoal_base_tolerance" value="0.04" />
+        <param name="subgoal_yaw_tolerance" value="0.08" />
+        <param name="subgoal_ee_tolerance" value="0.05" />
+    </node>
+</launch>

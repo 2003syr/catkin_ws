@@ -1,0 +1,51 @@
+DWAPlannerROS:
+  odom_topic: /odom
+
+  # Differential-drive/tracked kinematics: lateral velocity is impossible.
+  max_vel_x: 0.05
+  min_vel_x: -0.03
+  max_vel_y: 0.0
+  min_vel_y: 0.0
+  max_vel_trans: 0.05
+  # The planar controller is stable down to 0.02 m/s.  Allowing values near
+  # zero made DWA creep for minutes after clearing an obstacle.
+  min_vel_trans: 0.02
+  max_vel_theta: 0.125
+  min_vel_theta: 0.04
+  acc_lim_x: 0.20
+  acc_lim_y: 0.0
+  acc_lim_theta: 0.50
+  acc_lim_trans: 0.20
+
+  vx_samples: 8
+  vy_samples: 1
+  vth_samples: 30
+  use_dwa: true
+  sim_time: 4.0
+  sim_granularity: 0.025
+  angular_sim_granularity: 0.05
+
+  path_distance_bias: 24.0
+  goal_distance_bias: 16.0
+  occdist_scale: 0.50
+  forward_point_distance: 0.30
+  stop_time_buffer: 0.30
+  oscillation_reset_dist: 0.08
+  oscillation_reset_angle: 0.20
+  twirling_scale: 0.10
+
+  # The costmap resolution is 0.05 m.  Requiring sub-cell positioning made
+  # the tracked base hunt around an otherwise completed goal.
+  xy_goal_tolerance: 0.08
+  yaw_goal_tolerance: 0.20
+  latch_xy_goal_tolerance: true
+  # Dynamic acceptance measured a worst-case zero-command residual of
+  # 0.00813 m/s, so 0.01 is strict but reachable.
+  trans_stopped_vel: 0.01
+  theta_stopped_vel: 0.01
+  prune_plan: true
+
+  scaling_speed: 0.04
+  max_scaling_factor: 0.20
+  publish_traj_pc: true
+  publish_cost_grid_pc: true

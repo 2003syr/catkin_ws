@@ -1,0 +1,33 @@
+<launch>
+    <!--
+      Start the Python-3 PPO inference server separately before this launch.
+      The ROS node remains Python 2 and connects to it through localhost.
+    -->
+    <arg name="target_x" default="0.30" />
+    <arg name="target_y" default="0.0" />
+    <arg name="target_z" default="0.40" />
+    <arg name="ppo_host" default="127.0.0.1" />
+    <arg name="ppo_port" default="5556" />
+    <arg name="enable_planar_base" default="false" />
+    <arg name="enable_base_motion" default="false" />
+    <arg name="base_gain" default="5.0" />
+
+    <include file="$(find mobile_arm_rl_env)/launch/rule_based_hrl.launch">
+        <arg name="target_x" value="$(arg target_x)" />
+        <arg name="target_y" value="$(arg target_y)" />
+        <arg name="target_z" value="$(arg target_z)" />
+        <arg name="low_policy_type" value="ppo" />
+        <!-- Match the 30-step subgoal horizon used during PPO training. -->
+        <arg name="high_interval" value="30" />
+        <!-- Match the maximum arm subgoal used during PPO training. -->
+        <arg name="max_position_subgoal" value="0.08" />
+        <arg name="ppo_host" value="$(arg ppo_host)" />
+        <arg name="ppo_port" value="$(arg ppo_port)" />
+        <arg name="ppo_timeout" value="2.0" />
+        <arg name="enable_planar_base"
+             value="$(arg enable_planar_base)" />
+        <arg name="enable_base_motion"
+             value="$(arg enable_base_motion)" />
+        <arg name="base_gain" value="$(arg base_gain)" />
+    </include>
+</launch>

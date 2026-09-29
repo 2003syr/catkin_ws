@@ -1,0 +1,12 @@
+<launch>
+    <arg name="gui" default="true" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+        <!-- Leave reset clearance for the conservative 1.28 m footprint. -->
+        <arg name="obstacle_x_offset" value="0.50" />
+    </include>
+
+    <include file="$(find mobile_arm_rl_env)/launch/planar_base_teb_navigation.launch" />
+</launch>

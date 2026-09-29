@@ -1,0 +1,113 @@
+<launch>
+    <!-- Minimal RuleBasedHighPolicy + frozen 66-D/8-D low policy HRL. -->
+    <arg name="gui" default="true" />
+    <arg name="paused" default="false" />
+    <arg name="episodes" default="2" />
+    <arg name="seed" default="100123" />
+    <arg name="policy_host" default="127.0.0.1" />
+    <arg name="policy_port" default="5563" />
+    <arg name="low_policy_type" default="fused" />
+    <arg name="high_policy_type" default="scan_rule" />
+    <arg name="evaluation_detour_side" default="0.0" />
+    <arg name="no_obstacle" default="false" />
+    <arg name="high_level_interval" default="20" />
+    <arg name="base_subgoal_tolerance" default="0.04" />
+    <arg name="yaw_subgoal_tolerance" default="0.08" />
+    <arg name="ee_subgoal_tolerance" default="0.05" />
+    <arg name="subgoal_stable_cycles" default="3" />
+    <arg name="max_steps" default="1500" />
+    <arg name="minimum_success_rate" default="0.0" />
+    <arg name="minimum_overlap_rate" default="0.0" />
+    <arg name="maximum_collisions" default="2" />
+    <arg name="obstacle_x_offset" default="0.0" />
+    <arg name="obstacle_y_offset" default="0.0" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="obstacle_x_offset" value="$(arg obstacle_x_offset)" />
+        <arg name="obstacle_y_offset" value="$(arg obstacle_y_offset)" />
+        <arg name="disable_obstacle" value="$(arg no_obstacle)" />
+        <arg name="disable_arm_collisions" value="false" />
+        <arg name="enable_arm_contacts" value="true" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="eval_high_level.py"
+          name="evaluate_joint_subgoal_hrl"
+          output="screen"
+          required="true">
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="policy_host" value="$(arg policy_host)" />
+        <param name="policy_port" value="$(arg policy_port)" />
+        <param name="low_policy_type" value="$(arg low_policy_type)" />
+        <param name="high_policy_type" value="$(arg high_policy_type)" />
+        <param name="policy_timeout" value="5.0" />
+        <param name="evaluation_detour_side"
+               value="$(arg evaluation_detour_side)" />
+        <param name="no_obstacle" value="$(arg no_obstacle)" />
+        <param name="high_level_interval"
+               value="$(arg high_level_interval)" />
+        <param name="base_subgoal_tolerance"
+               value="$(arg base_subgoal_tolerance)" />
+        <param name="yaw_subgoal_tolerance"
+               value="$(arg yaw_subgoal_tolerance)" />
+        <param name="ee_subgoal_tolerance"
+               value="$(arg ee_subgoal_tolerance)" />
+        <param name="subgoal_stable_cycles"
+               value="$(arg subgoal_stable_cycles)" />
+        <param name="max_steps" value="$(arg max_steps)" />
+        <param name="minimum_success_rate"
+               value="$(arg minimum_success_rate)" />
+        <param name="minimum_overlap_rate"
+               value="$(arg minimum_overlap_rate)" />
+        <param name="maximum_collisions"
+               value="$(arg maximum_collisions)" />
+        <param name="minimum_probe_action_delta" value="0.0001" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="scan_bin_count" value="36" />
+        <param name="scan_output_max" value="10.0" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="arm_contact_topic" value="/arm_contacts" />
+        <param name="target_frame" value="fused_box_detour_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <rosparam param="reset_base_positions">[0.0, 0.0, 1.5708]</rosparam>
+        <rosparam param="reset_arm_positions">
+            [0.0, -0.30, 0.03, 0.0, 0.03, 0.0]
+        </rosparam>
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="target_min_chassis_clearance" value="0.015" />
+        <param name="success_threshold" value="0.05" />
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_settle_window" value="0.50" />
+        <param name="reset_drift_tolerance" value="0.002" />
+        <param name="reset_attempts" value="3" />
+        <param name="idle_hold_reset_service"
+               value="/arm_idle_position_hold/reset_targets" />
+        <param name="reset_timeout" value="7.0" />
+
+        <rosparam param="box_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="box_size_xy">[0.20, 0.32]</rosparam>
+        <rosparam param="final_base_goal_xy">[1.60, -0.13]</rosparam>
+        <param name="base_half_length" value="0.56" />
+        <param name="base_half_width" value="0.10" />
+        <param name="path_clearance" value="0.15" />
+        <param name="waypoint_tolerance" value="0.10" />
+        <param name="final_base_position_tolerance" value="0.03" />
+        <param name="final_base_yaw_tolerance" value="0.08" />
+        <param name="terminal_pose_enter_position_tolerance" value="0.03" />
+        <param name="terminal_pose_exit_position_tolerance" value="0.06" />
+        <param name="terminal_pose_stable_cycles" value="3" />
+
+        <param name="base_linear_action_scale" value="0.25" />
+        <param name="base_yaw_action_scale" value="0.25" />
+        <param name="residual_base_scale" value="0.10" />
+        <param name="residual_cartesian_scale" value="0.01" />
+    </node>
+</launch>

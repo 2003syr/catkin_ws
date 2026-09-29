@@ -1,0 +1,55 @@
+<launch>
+    <arg name="target_x" default="0.30" />
+    <arg name="target_y" default="0.0" />
+    <arg name="target_z" default="0.40" />
+    <arg name="low_policy_type" default="rule_based" />
+    <arg name="high_interval" default="10" />
+    <arg name="max_position_subgoal" default="0.10" />
+    <arg name="ppo_host" default="127.0.0.1" />
+    <arg name="ppo_port" default="5556" />
+    <arg name="ppo_timeout" default="2.0" />
+    <arg name="enable_planar_base" default="false" />
+    <arg name="enable_base_motion" default="false" />
+    <arg name="base_gain" default="5.0" />
+
+    <param name="/use_sim_time" value="true" />
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="target_tf_pub"
+          args="$(arg target_x) $(arg target_y) $(arg target_z) 0 0 0 world target_frame 100" />
+
+    <node pkg="mobile_arm_rl_env" type="run_rule_based_hrl.py"
+          name="rule_based_mobile_arm_hrl" output="screen">
+        <param name="base_frame" value="base_link" />
+        <param name="ee_frame" value="link6" />
+        <param name="target_frame" value="target_frame" />
+        <param name="low_policy_type" value="$(arg low_policy_type)" />
+        <param name="high_interval" value="$(arg high_interval)" />
+        <param name="arm_enter_distance" value="0.80" />
+        <param name="arm_exit_distance" value="1.00" />
+        <param name="min_joint_margin" value="0.08" />
+        <param name="max_position_subgoal"
+               value="$(arg max_position_subgoal)" />
+        <param name="ppo_host" value="$(arg ppo_host)" />
+        <param name="ppo_port" value="$(arg ppo_port)" />
+        <param name="ppo_timeout" value="$(arg ppo_timeout)" />
+        <param name="enable_planar_base"
+               value="$(arg enable_planar_base)" />
+        <param name="enable_base_motion"
+               value="$(arg enable_base_motion)" />
+        <param name="base_gain" value="$(arg base_gain)" />
+        <param name="recovery_gain" value="0.4" />
+        <param name="arm_cartesian_gain" value="1.0" />
+        <param name="max_cartesian_speed" value="0.05" />
+        <param name="dls_damping" value="0.03" />
+        <!-- HRL4IN low-level state:
+             [base_x, base_y, base_yaw, ee_x, ee_y, ee_z]. -->
+        <rosparam param="subgoal_tolerance">
+            [0.02, 0.02, 0.05, 0.01, 0.01, 0.01]
+        </rosparam>
+        <param name="intrinsic_reward_scale" value="30.0" />
+        <param name="subgoal_achieved_reward" value="1.0" />
+        <param name="collision_reward_weight" value="0.0" />
+        <param name="extrinsic_reward_weight" value="0.0" />
+    </node>
+</launch>

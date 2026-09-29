@@ -1,0 +1,62 @@
+<launch>
+    <!-- Start a mature ROS Navigation stack using TEB instead of DWA. -->
+    <arg name="cmd_vel_topic" default="/teb_cmd_vel" />
+    <arg name="odom_topic" default="/odom" />
+    <arg name="max_linear_speed" default="0.05" />
+    <arg name="max_yaw_rate" default="0.125" />
+    <arg name="enable_cmd_vel_bridge" default="true" />
+
+    <node pkg="mobile_arm_rl_env"
+          type="planar_base_odom.py"
+          name="planar_base_odom"
+          output="screen"
+          required="true">
+        <param name="joint_state_topic" value="/joint_states" />
+        <param name="odom_topic" value="$(arg odom_topic)" />
+        <param name="odom_frame" value="base_link" />
+        <param name="base_frame" value="base_footprint" />
+        <param name="velocity_filter_alpha" value="0.35" />
+    </node>
+
+    <node if="$(arg enable_cmd_vel_bridge)"
+          pkg="mobile_arm_rl_env"
+          type="planar_cmd_vel_bridge.py"
+          name="planar_cmd_vel_bridge"
+          output="screen"
+          required="true">
+        <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+        <param name="joint_state_topic" value="/joint_states" />
+        <param name="max_linear_speed" value="$(arg max_linear_speed)" />
+        <param name="max_yaw_rate" value="$(arg max_yaw_rate)" />
+        <param name="command_timeout" value="0.30" />
+        <param name="publish_rate" value="30.0" />
+        <rosparam param="x_limits">[-2.0, 2.0]</rosparam>
+        <rosparam param="y_limits">[-2.0, 2.0]</rosparam>
+    </node>
+
+    <node pkg="move_base"
+          type="move_base"
+          name="move_base"
+          output="screen"
+          clear_params="true"
+          required="true">
+        <rosparam command="load"
+                  file="$(find mobile_arm_rl_env)/config/navigation/move_base_teb.yaml" />
+        <rosparam command="load"
+                  file="$(find mobile_arm_rl_env)/config/navigation/teb_local_planner.yaml" />
+        <rosparam command="load"
+                  ns="local_costmap"
+                  file="$(find mobile_arm_rl_env)/config/navigation/costmap_common.yaml" />
+        <rosparam command="load"
+                  ns="local_costmap"
+                  file="$(find mobile_arm_rl_env)/config/navigation/local_costmap.yaml" />
+        <rosparam command="load"
+                  ns="global_costmap"
+                  file="$(find mobile_arm_rl_env)/config/navigation/costmap_common.yaml" />
+        <rosparam command="load"
+                  ns="global_costmap"
+                  file="$(find mobile_arm_rl_env)/config/navigation/global_costmap.yaml" />
+        <remap from="cmd_vel" to="$(arg cmd_vel_topic)" />
+        <remap from="odom" to="$(arg odom_topic)" />
+    </node>
+</launch>

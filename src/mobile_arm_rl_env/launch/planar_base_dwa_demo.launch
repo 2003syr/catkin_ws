@@ -1,0 +1,10 @@
+<launch>
+    <arg name="gui" default="true" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+    </include>
+
+    <include file="$(find mobile_arm_rl_env)/launch/planar_base_dwa_navigation.launch" />
+</launch>

@@ -1,0 +1,93 @@
+<launch>
+    <!--
+      Stage 1: obstacle-free path-guided tracking demonstrations.
+      The same 60-D observation is used later by PPO.
+    -->
+    <arg name="gui" default="false" />
+    <arg name="port" default="5558" />
+    <arg name="seed" default="123" />
+    <arg name="curriculum_stage" default="tracking_bc" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_control.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="enable_base_sensors" value="true" />
+        <arg name="simple_chassis_collision" value="true" />
+        <arg name="disable_chassis_gravity" value="true" />
+        <arg name="disable_arm_collisions" value="true" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="planar_direct_env_server.py"
+          name="planar_tracking_bc_environment_server"
+          output="screen"
+          required="true">
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="curriculum_stage"
+               value="$(arg curriculum_stage)" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="scan_bin_count" value="36" />
+        <param name="scan_output_max" value="10.0" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame"
+               value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <param name="base_action_scale" value="0.25" />
+
+        <!-- Random short goals teach all target bearings without obstacles. -->
+        <rosparam param="training_subgoals">[]</rosparam>
+        <param name="target_min_distance" value="0.30" />
+        <param name="target_max_distance" value="0.60" />
+        <rosparam param="target_exclusion_circles">[]</rosparam>
+        <param name="target_sample_attempts" value="200" />
+
+        <param name="subgoal_success_threshold" value="0.08" />
+        <param name="max_steps" value="600" />
+        <param name="timeout_penalty" value="2.0" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <param name="progress_reward_scale" value="4.0" />
+        <param name="path_progress_reward_scale" value="8.0" />
+        <param name="waypoint_reward" value="0.25" />
+        <param name="success_reward" value="5.0" />
+        <param name="collision_penalty" value="5.0" />
+        <param name="time_penalty" value="0.005" />
+        <param name="action_penalty_scale" value="0.002" />
+        <param name="smoothness_penalty_scale" value="0.01" />
+        <param name="reverse_penalty_scale" value="0.01" />
+        <param name="idle_penalty" value="0.01" />
+        <param name="idle_action_threshold" value="0.05" />
+        <param name="cross_track_penalty_scale" value="0.01" />
+        <param name="heading_penalty_scale" value="0.002" />
+        <param name="clearance_penalty_scale" value="0.05" />
+        <param name="preferred_clearance" value="0.25" />
+        <param name="collision_distance" value="0.18" />
+        <param name="scan_clip" value="10.0" />
+
+        <param name="high_level_interval" value="10" />
+        <param name="local_subgoal_tolerance" value="0.10" />
+        <param name="local_subgoal_min_radius" value="0.20" />
+        <param name="local_subgoal_max_radius" value="0.50" />
+        <param name="local_subgoal_clearance_margin" value="0.18" />
+        <param name="path_internal_points" value="10" />
+        <param name="path_replan_cross_track" value="0.35" />
+
+        <param name="shield_enabled" value="true" />
+        <param name="shield_footprint_half_length" value="0.56" />
+        <param name="shield_footprint_half_width" value="0.10" />
+        <param name="shield_min_clearance" value="0.22" />
+        <param name="shield_reaction_time" value="0.10" />
+        <param name="shield_braking_deceleration" value="0.30" />
+        <param name="shield_rotation_clearance" value="0.18" />
+        <param name="shield_front_half_angle" value="0.610865" />
+        <param name="shield_penalty_scale" value="0.01" />
+        <param name="shield_streak_penalty_scale" value="0.0" />
+        <param name="escape_turn_reward_scale" value="0.0" />
+    </node>
+</launch>

@@ -1,0 +1,30 @@
+# Internal x/y/yaw pose controllers for the tracked-base adapter.  Policies
+# never command x/y independently: the ROS environment maps [v, omega] to
+# [v*cos(heading), v*sin(heading), omega], where
+# heading = yaw - pi/2 because of the CAD chassis mounting transform.
+gazebo_ros_control:
+  pid_gains:
+    # DefaultRobotHWSim converts velocity error to joint effort.  The old
+    # 200/200/100 gains repeatedly saturated the virtual joints at +/-100
+    # effort and produced high-frequency motion that was hidden by averaged
+    # velocity checks.  A first stable trial at p=20 removed oscillation but
+    # under-tracked reverse translation and stopped too slowly.  p=100 gives
+    # the planar joints enough braking authority to settle within the 0.25 s
+    # acceptance window, while the URDF effort limit remains capped at 20
+    # instead of the old unstable limit of 100.  Yaw uses p=20 with a lower
+    # effort cap of 10.
+    x: {p: 100.0, i: 0.0, d: 0.0}
+    y: {p: 100.0, i: 0.0, d: 0.0}
+    z: {p: 20.0, i: 0.0, d: 0.0}
+
+x_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: x
+
+y_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: y
+
+z_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: z

@@ -1,0 +1,996 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mobile_arm">
+  <xacro:arg name="fixed_base_diagnostic" default="true"/>
+  <xacro:arg name="disable_arm_gravity" default="true"/>
+  <xacro:arg name="disable_chassis_gravity" default="false"/>
+  <xacro:arg name="simple_chassis_collision" default="false"/>
+  <xacro:arg name="enable_base_sensors" default="false"/>
+  <xacro:arg name="enable_arm_contacts" default="false"/>
+  <xacro:arg name="frictionless_planar_contacts" default="false"/>
+  <xacro:arg name="disable_arm_collisions" default="false"/>
+
+  <!-- Publish external contacts for every arm collision link when a task
+       explicitly enables full mobile-manipulator collision checking. -->
+  <xacro:macro name="arm_contact_sensor" params="link_name collision_name">
+    <gazebo reference="${link_name}">
+      <sensor name="${link_name}_contact_sensor" type="contact">
+        <always_on>true</always_on>
+        <update_rate>30</update_rate>
+        <contact>
+          <collision>${collision_name}</collision>
+        </contact>
+        <plugin filename="libgazebo_ros_bumper.so"
+                name="${link_name}_arm_bumper">
+          <bumperTopicName>/arm_contacts</bumperTopicName>
+          <frameName>${link_name}</frameName>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  
+  <!-- Gazebo world anchor for the optional planar x/y joint chain. -->
+  <link name="world"/>
+  <joint name="world_fixed" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.10"/>
+    <parent link="world"/>
+    <child link="base_link"/>
+  </joint>
+  
+  <!--
+    Virtual world anchor for the planar x/y/z/sway chain.
+    The exported base_link mesh is not a separate robot part, so it must not
+    be rendered or collide with the physical chassis on sway_link.
+  -->
+  <link name="base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  
+  
+  <!--
+    World-aligned planar translation chain.  The joint names are part of the
+    fixed ten-joint RL contract, therefore x and y must also describe the
+    corresponding world axes.  The original CAD rotations are consolidated
+    in the fixed sway mount below.
+  -->
+  <link name="x-link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  
+  
+  <xacro:if value="$(arg fixed_base_diagnostic)">
+    <joint name="x" type="fixed">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="base_link"/>
+      <child link="x-link"/>
+    </joint>
+  </xacro:if>
+  <xacro:unless value="$(arg fixed_base_diagnostic)">
+    <joint name="x" type="prismatic">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="base_link"/>
+      <child link="x-link"/>
+      <axis xyz="1 0 0"/>
+      <dynamics damping="0.5" friction="0.0"/>
+      <limit effort="20.0" lower="-2.0" upper="2.0" velocity="0.2"/>
+    </joint>
+  </xacro:unless>
+  
+  
+  <!-- Virtual translation link: no visual and no collision geometry. -->
+  <link name="y-link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  
+  
+  <xacro:if value="$(arg fixed_base_diagnostic)">
+    <joint name="y" type="fixed">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="x-link"/>
+      <child link="y-link"/>
+    </joint>
+  </xacro:if>
+  <xacro:unless value="$(arg fixed_base_diagnostic)">
+    <joint name="y" type="prismatic">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="x-link"/>
+      <child link="y-link"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.5" friction="0.0"/>
+      <limit effort="20.0" lower="-2.0" upper="2.0" velocity="0.2"/>
+    </joint>
+  </xacro:unless>
+  
+  
+  <!-- Virtual yaw link: no visual and no collision geometry. -->
+  <link name="z-link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  
+  
+  <xacro:if value="$(arg fixed_base_diagnostic)">
+    <joint name="z" type="fixed">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="y-link"/>
+      <child link="z-link"/>
+    </joint>
+  </xacro:if>
+  <xacro:unless value="$(arg fixed_base_diagnostic)">
+    <!-- Planar yaw used by the nonholonomic tracked-base adapter. -->
+    <joint name="z" type="continuous">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <parent link="y-link"/>
+      <child link="z-link"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.5" friction="0.0"/>
+      <limit effort="10.0" velocity="0.5"/>
+    </joint>
+  </xacro:unless>
+  
+  <!--
+    Standard ROS Navigation body frame.  The CAD assembly is mounted with a
+    -90 degree yaw relative to z-link, so base_footprint makes physical
+    forward equal to +X while keeping +Z vertical.
+  -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_joint" type="fixed">
+    <origin rpy="0 0 -1.5708" xyz="0 0 0"/>
+    <parent link="z-link"/>
+    <child link="base_footprint"/>
+  </joint>
+  
+  
+  <link name="sway_link">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="0.39879 0.0044402 -0.00027949"/>
+      
+      
+      <mass value="14.427"/>
+      
+      
+      <inertia ixx="0.0452" ixy="-0.0050417" ixz="-0.00030024" iyy="0.3667" iyz="2.0172E-05" izz="0.40039"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/sway_link.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="1 1 1 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg simple_chassis_collision)">
+      <collision name="sway_link_collision">
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <geometry>
+          <mesh filename="package://mobile_arm_description/meshes/sway_link.STL"/>
+        </geometry>
+      </collision>
+    </xacro:unless>
+    <xacro:if value="$(arg simple_chassis_collision)">
+      <!--
+        Chassis-aligned bounding box derived from sway_link.STL.  In the CAD
+        frame local Y is vertical; keeping that 0.20 m dimension prevents the
+        oversized collision used by the old test model from levering the
+        chassis away from its planar constraint.
+      -->
+      <collision name="sway_link_collision">
+        <origin rpy="0 0 0" xyz="0.43 0 0"/>
+        <geometry><box size="1.12 0.20 0.29"/></geometry>
+      </collision>
+    </xacro:if>
+    
+  
+  </link>
+  
+  
+  <xacro:if value="$(arg fixed_base_diagnostic)">
+    <joint name="sway" type="fixed">
+      <origin rpy="-1.5708 0 -1.5708" xyz="0 0.3 0"/>
+      <parent link="z-link"/>
+      <child link="sway_link"/>
+    </joint>
+  </xacro:if>
+  <xacro:unless value="$(arg fixed_base_diagnostic)">
+    <!--
+      sway is the fixed CAD mounting transform.  z is the one and only planar
+      yaw coordinate, avoiding redundant rotations in the exported chain.
+    -->
+    <joint name="sway" type="fixed">
+      <origin rpy="-1.5708 0 -1.5708" xyz="0 0.3 0"/>
+      <parent link="z-link"/>
+      <child link="sway_link"/>
+    </joint>
+  </xacro:unless>
+
+  <xacro:if value="$(arg enable_base_sensors)">
+    <!--
+      The sensor uses the standard navigation body frame, so LaserScan angle
+      zero and cmd_vel.linear.x both point along the tracks.
+    -->
+    <link name="base_laser">
+      <inertial>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <mass value="0.01"/>
+        <inertia ixx="0.00001" ixy="0" ixz="0"
+                 iyy="0.00001" iyz="0" izz="0.00001"/>
+      </inertial>
+      <visual>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <geometry><cylinder radius="0.035" length="0.04"/></geometry>
+        <material name="laser_red"><color rgba="0.8 0.1 0.1 1"/></material>
+      </visual>
+      <visual>
+        <origin rpy="0 0 0" xyz="0 0 -0.575"/>
+        <geometry><cylinder radius="0.015" length="1.15"/></geometry>
+        <material name="laser_mast"><color rgba="0.25 0.25 0.25 1"/></material>
+      </visual>
+    </link>
+    <joint name="base_laser_joint" type="fixed">
+      <!-- Keep the horizontal scan plane above the chassis and folded arm. -->
+      <origin rpy="0 0 0" xyz="0.13 0 1.15"/>
+      <parent link="base_footprint"/>
+      <child link="base_laser"/>
+    </joint>
+  </xacro:if>
+  
+  
+  <link name="link1">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="2.7339E-15 -0.01889 -0.0075161"/>
+      
+      
+      <mass value="0.54048"/>
+      
+      
+      <inertia ixx="0.00065129" ixy="-7.7903E-18" ixz="2.3198E-11" iyy="0.00051279" iyz="4.5445E-05" izz="0.00066551"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link1.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="1 1 1 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link1_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link1.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint1" type="revolute">
+    
+    
+    <origin rpy="-1.5708 0 -3.1416" xyz="0.42 -0.13466 0"/>
+    
+    
+    <parent link="sway_link"/>
+    
+    
+    <child link="link1"/>
+    
+    
+    <axis xyz="0 0 1"/>
+    <dynamics damping="20.0" friction="1.0"/>
+    <limit effort="50.0" lower="-1.57" upper="1.57" velocity="0.5"/>
+    
+  
+  </joint>
+  
+  
+  <link name="link2">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="-1.3901E-06 -0.24232 0.0055822"/>
+      
+      
+      <mass value="1.3852"/>
+      
+      
+      <inertia ixx="0.022598" ixy="6.8367E-08" ixz="1.3113E-08" iyy="0.0020842" iyz="-9.0591E-05" izz="0.022438"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link2.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="1 1 1 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link2_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link2.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint2" type="revolute">
+    
+    
+    <origin rpy="1.5708 -1.5708 0" xyz="0 0.023 0"/>
+    
+    
+    <parent link="link1"/>
+    
+    
+    <child link="link2"/>
+    
+    
+    <axis xyz="0 0 -1"/>
+    <dynamics damping="20.0" friction="1.0"/>
+    <limit effort="50.0" lower="-1.45" upper="0.0" velocity="0.5"/>
+    
+  
+  </joint>
+  
+  
+  <link name="link3">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="-7.476E-08 -0.0015733 -0.16155"/>
+      
+      
+      <mass value="0.73396"/>
+      
+      
+      <inertia ixx="0.0060731" ixy="9.6037E-07" ixz="-2.0152E-09" iyy="0.0060712" iyz="2.1958E-06" izz="0.00073349"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link3.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="0.89804 0.91765 0.92941 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link3_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link3.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint3" type="prismatic">
+    
+    
+    <origin rpy="-1.5708 0 3.1416" xyz="0 -0.6043 0"/>
+    
+    
+    <parent link="link2"/>
+    
+    
+    <child link="link3"/>
+    
+    
+    <axis xyz="0 0 1"/>
+    <dynamics damping="50.0" friction="1.0"/>
+    <limit effort="100.0" lower="0.0" upper="0.15" velocity="0.03"/>
+    
+  
+  </joint>
+  
+  
+  <link name="link4">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="-1.107E-05 -0.1856 0.00065037"/>
+      
+      
+      <mass value="0.60906"/>
+      
+      
+      <inertia ixx="0.00706" ixy="7.2127E-07" ixz="3.2551E-09" iyy="0.00042093" iyz="-4.5398E-07" izz="0.0071415"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link4.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="1 1 1 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link4_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link4.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint4" type="revolute">
+    
+    
+    <origin rpy="1.5708 0 0" xyz="0 -0.0725 0"/>
+    
+    
+    <parent link="link3"/>
+    
+    
+    <child link="link4"/>
+    
+    
+    <axis xyz="0 0 1"/>
+    <dynamics damping="20.0" friction="1.0"/>
+    <limit effort="50.0" lower="-1.57" upper="1.57" velocity="0.5"/>
+    
+  
+  </joint>
+  
+  
+  <link name="link5">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="1.6164E-09 0.00013947 -0.13461"/>
+      
+      
+      <mass value="0.37018"/>
+      
+      
+      <inertia ixx="0.002369" ixy="-2.3222E-07" ixz="9.5289E-11" iyy="0.0023512" iyz="7.3387E-07" izz="0.00013067"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link5.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="0.89804 0.91765 0.92941 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link5_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link5.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint5" type="prismatic">
+    
+    
+    <origin rpy="1.5708 1.5708 0" xyz="0 -0.5071 0"/>
+    
+    
+    <parent link="link4"/>
+    
+    
+    <child link="link5"/>
+    
+    
+    <axis xyz="0 0 -1"/>
+    <dynamics damping="50.0" friction="1.0"/>
+    <limit effort="100.0" lower="0.0" upper="0.15" velocity="0.03"/>
+    
+  
+  </joint>
+  
+  
+  <link name="link6">
+    
+    
+    <inertial>
+      
+      
+      <origin rpy="0 0 0" xyz="-2.1997E-10 5.2042E-17 -0.005"/>
+      
+      
+      <mass value="0.00019635"/>
+      
+      
+      <inertia ixx="1.943E-09" ixy="6.4828E-31" ixz="-5.8487E-17" iyy="1.943E-09" iyz="1.4736E-23" izz="6.1359E-10"/>
+      
+    
+    </inertial>
+    
+    
+    <visual>
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link6.STL"/>
+        
+      
+      </geometry>
+      
+      
+      <material name="">
+        
+        
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+        
+      
+      </material>
+      
+    
+    </visual>
+    
+    
+    <xacro:unless value="$(arg disable_arm_collisions)">
+    <collision name="link6_collision">
+      
+      
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      
+      
+      <geometry>
+        
+        
+        <mesh filename="package://mobile_arm_description/meshes/link6.STL"/>
+        
+      
+      </geometry>
+      
+    
+    </collision>
+    </xacro:unless>
+    
+  
+  </link>
+  
+  
+  <joint name="joint6" type="revolute">
+    
+    
+    <origin rpy="-1.5708 0 3.1416" xyz="0 -0.033 0"/>
+    
+    
+    <parent link="link5"/>
+    
+    
+    <child link="link6"/>
+    
+    
+    <axis xyz="0 0 1"/>
+    <dynamics damping="20.0" friction="1.0"/>
+    <limit effort="50.0" lower="-1.57" upper="1.57" velocity="0.5"/>
+    
+  
+  </joint>
+  
+
+  <xacro:unless value="$(arg fixed_base_diagnostic)">
+    <transmission name="x_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <joint name="x">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+      <actuator name="x_motor">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+        <mechanicalReduction>1</mechanicalReduction>
+      </actuator>
+    </transmission>
+    <transmission name="y_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <joint name="y">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+      <actuator name="y_motor">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+        <mechanicalReduction>1</mechanicalReduction>
+      </actuator>
+    </transmission>
+    <transmission name="z_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <joint name="z">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+      <actuator name="z_motor">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+        <mechanicalReduction>1</mechanicalReduction>
+      </actuator>
+    </transmission>
+  </xacro:unless>
+
+  <transmission name="joint1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint1">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint1_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="joint2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint2">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint2_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="joint3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint3">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint3_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="joint4_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint4">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint4_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="joint5_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint5">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint5_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="joint6_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint6">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="joint6_motor">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <xacro:if value="$(arg disable_chassis_gravity)">
+    <!-- Gazebo's URDF extension uses turnGravityOff, not the SDF gravity tag. -->
+    <gazebo reference="sway_link"><turnGravityOff>true</turnGravityOff></gazebo>
+  </xacro:if>
+  <xacro:if value="$(arg disable_arm_gravity)">
+    <!-- Isolate velocity tracking from gravity while the arm controller is tuned. -->
+    <gazebo reference="link1"><turnGravityOff>true</turnGravityOff></gazebo>
+    <gazebo reference="link2"><turnGravityOff>true</turnGravityOff></gazebo>
+    <gazebo reference="link3"><turnGravityOff>true</turnGravityOff></gazebo>
+    <gazebo reference="link4"><turnGravityOff>true</turnGravityOff></gazebo>
+    <gazebo reference="link5"><turnGravityOff>true</turnGravityOff></gazebo>
+    <gazebo reference="link6"><turnGravityOff>true</turnGravityOff></gazebo>
+  </xacro:if>
+  <xacro:if value="$(arg frictionless_planar_contacts)">
+    <!--
+      x/y/yaw store the integrated planar pose during tracked-base training.
+      Zero tangential contact friction prevents links that
+      touch the ground from locking those joints; normal collision response
+      remains active, so walls and obstacles still block penetration.
+    -->
+    <gazebo reference="sway_link"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link1"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link2"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link3"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link4"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link5"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+    <gazebo reference="link6"><mu1>0.0</mu1><mu2>0.0</mu2></gazebo>
+  </xacro:if>
+  <xacro:if value="$(arg enable_base_sensors)">
+    <gazebo reference="base_laser">
+      <material>Gazebo/Red</material>
+      <sensor name="base_laser_sensor" type="ray">
+        <always_on>true</always_on>
+        <update_rate>15</update_rate>
+        <visualize>false</visualize>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159265359</min_angle>
+              <max_angle>3.14159265359</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.05</min>
+            <max>10.0</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.002</stddev>
+          </noise>
+        </ray>
+        <plugin filename="libgazebo_ros_laser.so"
+                name="gazebo_ros_base_laser">
+          <topicName>/scan</topicName>
+          <frameName>base_laser</frameName>
+        </plugin>
+      </sensor>
+    </gazebo>
+    <gazebo reference="sway_link">
+      <sensor name="base_contact_sensor" type="contact">
+        <always_on>true</always_on>
+        <update_rate>30</update_rate>
+        <contact>
+          <collision>sway_link_collision</collision>
+        </contact>
+        <plugin filename="libgazebo_ros_bumper.so"
+                name="gazebo_ros_base_bumper">
+          <bumperTopicName>/base_contacts</bumperTopicName>
+          <frameName>base_link</frameName>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+  <xacro:if value="$(arg enable_arm_contacts)">
+    <xacro:arm_contact_sensor link_name="link1"
+                               collision_name="link1_collision" />
+    <xacro:arm_contact_sensor link_name="link2"
+                               collision_name="link2_collision" />
+    <xacro:arm_contact_sensor link_name="link3"
+                               collision_name="link3_collision" />
+    <xacro:arm_contact_sensor link_name="link4"
+                               collision_name="link4_collision" />
+    <xacro:arm_contact_sensor link_name="link5"
+                               collision_name="link5_collision" />
+    <xacro:arm_contact_sensor link_name="link6"
+                               collision_name="link6_collision" />
+  </xacro:if>
+  <gazebo>
+    <plugin filename="libgazebo_ros_control.so" name="gazebo_ros_control">
+      <robotNamespace>/</robotNamespace>
+    </plugin>
+  </gazebo>
+</robot>

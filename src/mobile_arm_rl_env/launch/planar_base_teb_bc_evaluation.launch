@@ -1,0 +1,97 @@
+<launch>
+    <!--
+      Closed-loop student evaluation:
+        TEB -> local plan + reference cmd_vel only
+        BC  -> /learner_cmd_vel -> tracked-base bridge
+      The Python 3 policy server must be started separately.
+    -->
+    <arg name="gui" default="true" />
+    <arg name="episodes" default="6" />
+    <arg name="required_success_rate" default="1.0" />
+    <arg name="maximum_collisions" default="0" />
+    <arg name="maximum_episode_seconds" default="180.0" />
+    <arg name="policy_host" default="127.0.0.1" />
+    <arg name="policy_port" default="5559" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+        <arg name="obstacle_x_offset" value="0.50" />
+    </include>
+
+    <!-- TEB remains alive for replanning, but cannot drive the robot. -->
+    <include file="$(find mobile_arm_rl_env)/launch/planar_base_teb_navigation.launch">
+        <arg name="cmd_vel_topic" value="/teb_reference_cmd_vel" />
+        <arg name="enable_cmd_vel_bridge" value="false" />
+        <arg name="max_linear_speed" value="0.05" />
+        <arg name="max_yaw_rate" value="0.125" />
+    </include>
+
+    <!-- Only the learner output reaches the synthetic tracked base. -->
+    <node pkg="mobile_arm_rl_env"
+          type="planar_cmd_vel_bridge.py"
+          name="learner_planar_cmd_vel_bridge"
+          output="screen"
+          required="true">
+        <param name="cmd_vel_topic" value="/learner_cmd_vel" />
+        <param name="joint_state_topic" value="/joint_states" />
+        <param name="max_linear_speed" value="0.05" />
+        <param name="max_yaw_rate" value="0.125" />
+        <param name="command_timeout" value="0.30" />
+        <param name="publish_rate" value="30.0" />
+        <rosparam param="x_limits">[-2.0, 2.0]</rosparam>
+        <rosparam param="y_limits">[-2.0, 2.0]</rosparam>
+    </node>
+
+    <node pkg="mobile_arm_rl_env"
+          type="evaluate_teb_planar_bc.py"
+          name="evaluate_teb_planar_bc"
+          output="screen">
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="required_success_rate"
+               value="$(arg required_success_rate)" />
+        <param name="maximum_collisions"
+               value="$(arg maximum_collisions)" />
+        <param name="maximum_episode_seconds"
+               value="$(arg maximum_episode_seconds)" />
+        <param name="policy_host" value="$(arg policy_host)" />
+        <param name="policy_port" value="$(arg policy_port)" />
+        <param name="policy_timeout" value="5.0" />
+        <param name="goal_frame" value="base_link" />
+        <param name="local_plan_topic"
+               value="/move_base/TebLocalPlannerROS/local_plan" />
+        <param name="reference_cmd_topic"
+               value="/teb_reference_cmd_vel" />
+        <param name="learner_cmd_topic" value="/learner_cmd_vel" />
+        <param name="sample_rate" value="10.0" />
+        <param name="message_timeout" value="0.75" />
+        <param name="scan_clip" value="10.0" />
+        <param name="lookahead_distance" value="0.50" />
+        <param name="path_point_spacing" value="0.10" />
+        <param name="path_remaining_scale" value="1.0" />
+        <param name="max_linear_speed" value="0.05" />
+        <param name="max_yaw_rate" value="0.125" />
+
+        <!-- Emergency-only fallback; TEB/BC should normally stay above it. -->
+        <param name="emergency_translation_distance" value="0.11" />
+        <param name="emergency_rotation_distance" value="0.08" />
+        <param name="safety_sector_half_angle" value="0.61086523820" />
+
+        <rosparam param="goals">
+          - [1.82, -0.13,  1.57079632679]
+          - [0.00,  0.00,  0.0]
+          - [1.82,  0.20, -1.57079632679]
+          - [0.00,  0.12,  0.0]
+          - [1.82, -0.46,  1.57079632679]
+          - [0.00, -0.12,  0.0]
+        </rosparam>
+        <rosparam param="goal_labels">
+          - frontal_far
+          - frontal_home
+          - upper_far
+          - upper_home
+          - lower_far
+          - lower_home
+        </rosparam>
+    </node>
+</launch>

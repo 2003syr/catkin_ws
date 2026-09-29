@@ -1,0 +1,85 @@
+<launch>
+    <!-- Start mobile_arm_description/gazebo_planar_avoidance.launch first. -->
+    <arg name="episodes" default="10" />
+    <arg name="seed" default="123" />
+    <arg name="required_success_rate" default="0.80" />
+
+    <param name="/use_sim_time" value="true" />
+
+    <node pkg="mobile_arm_rl_env"
+          type="evaluate_rule_based_planar_avoidance.py"
+          name="evaluate_rule_based_planar_avoidance"
+          output="screen"
+          required="true">
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame" value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="required_success_rate"
+               value="$(arg required_success_rate)" />
+        <param name="tracking_error_threshold" value="0.35" />
+        <param name="tracking_failure_patience" value="20" />
+        <!-- Body-frame lateral velocity must remain near zero for the
+             tracked/unicycle base. -->
+        <param name="lateral_velocity_threshold" value="0.015" />
+        <rosparam param="arm_hold_tolerances">
+          [0.05, 0.05, 0.01, 0.05, 0.01, 0.05]
+        </rosparam>
+        <!-- v_max=0.05 m/s and yaw_rate_max=0.125 rad/s after scaling. -->
+        <param name="base_action_scale" value="0.25" />
+        <rosparam param="targets">
+          [[1.65, -0.13], [1.65, 0.10], [1.65, -0.40],
+           [0.00, 1.20], [-1.10, -0.50]]
+        </rosparam>
+
+        <param name="target_min_distance" value="0.40" />
+        <param name="target_max_distance" value="1.79" />
+        <rosparam param="target_exclusion_circles">[0.85, -0.13, 0.72]</rosparam>
+        <param name="target_sample_attempts" value="200" />
+
+        <param name="base_success_threshold" value="0.04" />
+        <!-- Turn-in-place plus obstacle passing is deliberately longer than
+             the old holonomic path; keep enough time at 0.05 m/s. -->
+        <param name="max_steps" value="1200" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <param name="progress_reward_scale" value="10.0" />
+        <param name="success_reward" value="2.0" />
+        <param name="collision_penalty" value="2.0" />
+        <param name="time_penalty" value="0.01" />
+        <param name="action_penalty_scale" value="0.01" />
+        <param name="smoothness_penalty_scale" value="0.02" />
+        <param name="collision_distance" value="0.18" />
+        <param name="scan_clip" value="10.0" />
+
+        <param name="avoidance_influence_distance" value="1.00" />
+        <param name="attraction_gain" value="1.00" />
+        <param name="repulsion_gain" value="1.40" />
+        <param name="tangential_gain" value="1.50" />
+        <param name="emergency_margin" value="0.12" />
+        <param name="emergency_tangent_gain" value="1.50" />
+        <param name="goal_slow_radius" value="0.30" />
+        <param name="previous_action_weight" value="0.80" />
+        <param name="side_clearance_hysteresis" value="0.10" />
+        <!-- Stateful Bug-style detour: pass beside and beyond the blocker,
+             then release the waypoint and converge to the real target. -->
+        <param name="detour_clearance" value="0.90" />
+        <param name="detour_forward_distance" value="0.75" />
+        <param name="detour_tolerance" value="0.10" />
+        <param name="detour_gain" value="1.50" />
+        <!-- Back straight away before rotating the long tracked chassis. -->
+        <param name="turn_clearance" value="1.15" />
+        <param name="reverse_speed" value="0.50" />
+        <param name="minimum_turn_steps" value="60" />
+        <param name="minimum_pass_steps" value="240" />
+        <rosparam param="sector_safety_distances">
+          [0.40, 0.40, 0.40, 0.40, 0.40]
+        </rosparam>
+    </node>
+</launch>

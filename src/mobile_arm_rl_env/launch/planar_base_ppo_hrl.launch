@@ -1,0 +1,22 @@
+<launch>
+    <!--
+      Rule-based planar BASE_APPROACH plus the trained PPO ARM_REACH policy.
+      Start gazebo_planar_control.launch and the PPO policy server first.
+    -->
+    <arg name="target_x" default="1.20" />
+    <arg name="target_y" default="0.20" />
+    <arg name="target_z" default="0.40" />
+    <arg name="ppo_host" default="127.0.0.1" />
+    <arg name="ppo_port" default="5556" />
+
+    <include file="$(find mobile_arm_rl_env)/launch/ppo_low_rule_high_hrl.launch">
+        <arg name="target_x" value="$(arg target_x)" />
+        <arg name="target_y" value="$(arg target_y)" />
+        <arg name="target_z" value="$(arg target_z)" />
+        <arg name="ppo_host" value="$(arg ppo_host)" />
+        <arg name="ppo_port" value="$(arg ppo_port)" />
+        <arg name="enable_planar_base" value="true" />
+        <arg name="enable_base_motion" value="true" />
+        <arg name="base_gain" value="5.0" />
+    </include>
+</launch>
