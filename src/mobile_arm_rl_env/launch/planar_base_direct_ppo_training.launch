@@ -1,0 +1,150 @@
+<launch>
+    <!--
+      Pose-and-path-guided hierarchical base PPO.
+      The rule-based high level selects a feasible local subgoal every
+      high_level_interval.  The low level receives five path-preview points
+      and outputs only tracked-base [v, omega].  No DWA process is started.
+    -->
+    <arg name="gui" default="false" />
+    <arg name="port" default="5558" />
+    <arg name="seed" default="123" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+        <!--
+          sway_link's simplified collision box extends about 0.69 m forward
+          from base_link at the verified initial yaw.  The obstacle SDF link
+          is centered at x=0.85 m, so add 0.50 m here: its near face is then
+          x=1.25 m, leaving 0.56 m of collision-free reset clearance.
+        -->
+        <arg name="obstacle_x_offset" value="0.50" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="planar_direct_env_server.py"
+          name="planar_direct_environment_server"
+          output="screen"
+          required="true">
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="curriculum_stage" value="path_guided_all_scenarios" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="scan_bin_count" value="36" />
+        <param name="scan_output_max" value="10.0" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame"
+               value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <!-- Verified tracked-base limits: 0.05 m/s and 0.125 rad/s. -->
+        <param name="base_action_scale" value="0.25" />
+
+        <!--
+          Some goals lie behind the obstacle and require a detour; the
+          others preserve free-space, turning, and reverse examples.
+          Distances account for the offset from base_link to the front of
+          the long tracked chassis.
+        -->
+        <rosparam param="training_subgoals">
+          [[1.70, -0.13], [1.70, 0.20],
+           [1.70, -0.48], [1.45, 0.55],
+           [1.45, -0.70], [1.00, 0.60],
+           [1.00, -0.70], [-0.80, 0.40],
+           [-0.80, -0.40]]
+        </rosparam>
+        <rosparam param="training_scenario_labels">
+          [frontal, frontal, frontal, offset, offset,
+           free, free, free, free]
+        </rosparam>
+        <!--
+          Cumulative curriculum: retain earlier skills while gradually adding
+          offset and then directly blocked subgoals.  The Python trainer sends
+          its absolute step count on every reset, so resumed training enters
+          the correct stage instead of restarting the schedule.
+        -->
+        <rosparam param="curriculum">
+          - name: free_space
+            until_step: 5000
+            subgoal_indices: [5, 6, 7, 8]
+          - name: offset_obstacle
+            until_step: 15000
+            subgoal_indices: [3, 4, 5, 6, 7, 8]
+          - name: frontal_obstacle
+            until_step: -1
+            subgoal_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        </rosparam>
+        <param name="target_min_distance" value="0.75" />
+        <!-- Keep 0.21 m margin inside the planar x/y joint limits. -->
+        <param name="target_max_distance" value="1.79" />
+        <rosparam param="target_exclusion_circles">
+          [1.35, -0.13, 0.28]
+        </rosparam>
+        <param name="target_sample_attempts" value="300" />
+
+        <param name="subgoal_success_threshold" value="0.08" />
+        <param name="max_steps" value="1000" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <!-- Final-task progress remains visible only through reward. -->
+        <param name="progress_reward_scale" value="4.0" />
+        <!-- Dense intrinsic reward follows the current local path. -->
+        <param name="path_progress_reward_scale" value="8.0" />
+        <param name="waypoint_reward" value="0.25" />
+        <param name="success_reward" value="5.0" />
+        <param name="collision_penalty" value="5.0" />
+        <param name="timeout_penalty" value="2.0" />
+        <param name="time_penalty" value="0.005" />
+        <param name="action_penalty_scale" value="0.002" />
+        <param name="smoothness_penalty_scale" value="0.01" />
+        <param name="reverse_penalty_scale" value="0.01" />
+        <param name="idle_penalty" value="0.01" />
+        <param name="idle_action_threshold" value="0.05" />
+        <param name="cross_track_penalty_scale" value="0.01" />
+        <param name="heading_penalty_scale" value="0.002" />
+        <param name="clearance_penalty_scale" value="0.05" />
+        <param name="preferred_clearance" value="0.25" />
+        <param name="collision_distance" value="0.18" />
+        <param name="scan_clip" value="10.0" />
+
+        <!-- Slow high-level local-subgoal and path-preview contract. -->
+        <param name="high_level_interval" value="10" />
+        <param name="local_subgoal_tolerance" value="0.10" />
+        <param name="local_subgoal_yaw_tolerance" value="0.17" />
+        <param name="local_subgoal_min_radius" value="0.20" />
+        <param name="local_subgoal_max_radius" value="0.50" />
+        <param name="local_subgoal_clearance_margin" value="0.18" />
+        <param name="path_internal_points" value="10" />
+        <param name="path_replan_cross_track" value="0.35" />
+        <!-- Keep one bypass side until the long tracked footprint has moved
+             fully past the obstacle.  Three consecutive clear high-level
+             updates prevent a single noisy scan from releasing the detour. -->
+        <param name="detour_release_cycles" value="3" />
+        <param name="detour_min_lock_updates" value="4" />
+        <param name="detour_release_rear_angle" value="1.919862" />
+        <param name="detour_release_side_clearance" value="0.25" />
+        <param name="detour_nearby_clearance" value="0.80" />
+
+        <!-- Emergency-only safety net.  It limits imminent translation but
+             does not choose a detour and preserves an escape rotation. -->
+        <param name="shield_enabled" value="true" />
+        <param name="shield_footprint_half_length" value="0.56" />
+        <param name="shield_footprint_half_width" value="0.10" />
+        <param name="shield_min_clearance" value="0.22" />
+        <param name="shield_reaction_time" value="0.10" />
+        <param name="shield_braking_deceleration" value="0.30" />
+        <param name="shield_rotation_clearance" value="0.18" />
+        <param name="shield_front_half_angle" value="0.610865" />
+        <param name="shield_penalty_scale" value="0.01" />
+        <param name="shield_streak_penalty_scale" value="0.0" />
+        <param name="shield_streak_penalty_cap" value="50" />
+        <param name="escape_turn_reward_scale" value="0.0" />
+        <param name="escape_turn_clearance_scale" value="0.50" />
+    </node>
+</launch>

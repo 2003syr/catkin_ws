@@ -1,7 +1,7 @@
 <launch>
   <param
     name="robot_description"
-    textfile="$(find mobile_arm_description)/urdf/mobile_arm.urdf" />
+    command="$(find xacro)/xacro '$(find mobile_arm_description)/urdf/mobile_arm.urdf.xacro' fixed_base_diagnostic:=true disable_arm_gravity:=true disable_chassis_gravity:=false simple_chassis_collision:=false" />
   <node
     name="joint_state_publisher_gui"
     pkg="joint_state_publisher_gui"

@@ -31,8 +31,17 @@ class RuleBasedHighPolicy(object):
 
     def predict(self, observation):
         obs = self._as_vector(observation)
-        target_in_ee = obs[3:6]
+        target_in_base = obs[0:3]
+        ee_in_base = obs[6:9]
+        target_error_in_base = target_in_base - ee_in_base
         ee_target_distance = float(obs[10])
+        joint_positions = obs[11:21]
+        base_position = joint_positions[0:2]
+        base_yaw = float(joint_positions[3])
+        base_target_local = self._rotate_xy(
+            target_in_base[0:2] - base_position,
+            -base_yaw,
+        )
         joint_margin = obs[31:41]
 
         if np.min(joint_margin) < self.min_joint_margin:
@@ -55,10 +64,14 @@ class RuleBasedHighPolicy(object):
             else:
                 self.current_mode = TaskMode.ARM_REACH
 
-        subgoal = np.zeros(6, dtype=np.float32)
-        subgoal[:3] = self._limit_norm(target_in_ee, self.max_position_subgoal)
-
         if self.current_mode == TaskMode.BASE_APPROACH:
+            subgoal = np.zeros(6, dtype=np.float32)
+            # HRL4IN meta actions are relative state changes.  Planar base
+            # displacement is expressed in the current robot-local frame.
+            subgoal[0:2] = self._limit_norm(
+                base_target_local,
+                self.max_position_subgoal,
+            )
             return HighLevelCommand(
                 TaskMode.BASE_APPROACH,
                 subgoal,
@@ -67,6 +80,12 @@ class RuleBasedHighPolicy(object):
                 reason="target outside arm operating region",
             )
 
+        subgoal = np.zeros(6, dtype=np.float32)
+        # End-effector displacement occupies the arm task-state dimensions.
+        subgoal[3:6] = self._limit_norm(
+            target_error_in_base,
+            self.max_position_subgoal,
+        )
         return HighLevelCommand(
             TaskMode.ARM_REACH,
             subgoal,
@@ -94,3 +113,12 @@ class RuleBasedHighPolicy(object):
             return vector * (maximum / norm)
         return vector
 
+    @staticmethod
+    def _rotate_xy(vector, angle):
+        vector = np.asarray(vector, dtype=np.float32)
+        cosine = np.cos(angle)
+        sine = np.sin(angle)
+        return np.asarray([
+            cosine * vector[0] - sine * vector[1],
+            sine * vector[0] + cosine * vector[1],
+        ], dtype=np.float32)

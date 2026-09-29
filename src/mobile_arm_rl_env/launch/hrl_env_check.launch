@@ -1,20 +1,12 @@
 <launch>
-    <!-- 使用 Gazebo 仿真时间，避免 TF 时间戳不一致 -->
     <param name="/use_sim_time" value="true" />
 
-    <!-- 临时固定 world 到 base_link -->
-    <node pkg="tf"
-          type="static_transform_publisher"
-          name="world_to_base_pub"
-          args="0 0 0 0 0 0 world base_link 100" />
-
-    <!-- 目标点固定在 world 坐标系下 -->
+    <!-- world -> base_link is published only by the URDF world_fixed joint. -->
     <node pkg="tf"
           type="static_transform_publisher"
           name="target_tf_pub"
           args="1.5 0.0 0.8 0 0 0 world target_frame 100" />
 
-    <!-- 强化学习输入检查节点 -->
     <node pkg="mobile_arm_rl_env"
           type="mobile_arm_hrl_env_check.py"
           name="mobile_arm_env_check"

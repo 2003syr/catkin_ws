@@ -1,0 +1,18 @@
+<launch>
+    <arg name="gui" default="true" />
+    <arg name="paused" default="false" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_control.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="enable_base_sensors" value="true" />
+        <arg name="simple_chassis_collision" value="true" />
+        <arg name="disable_chassis_gravity" value="true" />
+    </include>
+
+    <node pkg="gazebo_ros"
+          type="spawn_model"
+          name="spawn_planar_obstacles"
+          output="screen"
+          args="-sdf -file $(find mobile_arm_description)/models/planar_obstacles.sdf -model planar_obstacles" />
+</launch>

@@ -15,6 +15,19 @@ for mobile_arm robot</p>
   <depend>rviz</depend>
   <depend>joint_state_publisher_gui</depend>
   <depend>gazebo_ros</depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <test_depend>kdl_parser_py</test_depend>
+  <test_depend>python_orocos_kdl</test_depend>
+  <test_depend>xacro</test_depend>
   <export>
     <architecture_independent />
   </export>

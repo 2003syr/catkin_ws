@@ -1,0 +1,70 @@
+<launch>
+    <!--
+      66-D observation / 8-D action environment server.
+      Use only after fused_low_teacher_evaluation.launch passes.
+    -->
+    <arg name="gui" default="true" />
+    <arg name="port" default="5562" />
+    <arg name="seed" default="123" />
+    <arg name="enable_teacher" default="true" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_control.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="enable_base_sensors" value="true" />
+        <arg name="simple_chassis_collision" value="true" />
+        <arg name="disable_chassis_gravity" value="true" />
+        <arg name="disable_arm_gravity" value="true" />
+        <arg name="disable_arm_collisions" value="false" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="fused_low_env_server.py"
+          name="fused_low_environment_server"
+          output="screen"
+          required="true">
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="enable_teacher" value="$(arg enable_teacher)" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame" value="fused_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <rosparam param="reset_base_positions">[0.0, 0.0, 1.5708]</rosparam>
+        <rosparam param="reset_arm_positions">
+            [0.0, -0.30, 0.03, 0.0, 0.03, 0.0]
+        </rosparam>
+        <param name="base_target_min_distance" value="0.30" />
+        <param name="base_target_max_distance" value="0.55" />
+        <param name="base_target_max_lateral" value="0.15" />
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="target_min_chassis_clearance" value="0.015" />
+        <param name="target_sample_attempts" value="100" />
+        <param name="success_threshold" value="0.05" />
+        <param name="max_steps" value="500" />
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_settle_window" value="0.50" />
+        <param name="reset_drift_tolerance" value="0.002" />
+        <param name="reset_attempts" value="3" />
+        <param name="idle_hold_reset_service"
+               value="/arm_idle_position_hold/reset_targets" />
+        <param name="reset_timeout" value="7.0" />
+
+        <param name="base_linear_action_scale" value="0.25" />
+        <param name="base_yaw_action_scale" value="0.25" />
+        <param name="teacher_base_gain" value="2.5" />
+        <param name="teacher_yaw_gain" value="1.5" />
+        <param name="teacher_arm_gain" value="1.0" />
+        <param name="teacher_arm_start_distance" value="0.30" />
+        <param name="teacher_base_stop_distance" value="0.04" />
+        <param name="teacher_heading_slow_angle" value="0.70" />
+        <param name="teacher_max_cartesian_speed" value="0.05" />
+        <param name="teacher_dls_damping" value="0.03" />
+    </node>
+</launch>

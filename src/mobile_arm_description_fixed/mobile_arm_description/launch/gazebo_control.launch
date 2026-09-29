@@ -1,48 +1,156 @@
 <launch>
+    <!--
+      Normal/default mode is a truly fixed diagnostic base. Setting
+      fixed_base_diagnostic:=false enables the isolated x/y planar
+      controller chain while keeping z and sway fixed.
+    -->
+    <arg name="fixed_base_diagnostic" default="true" />
+    <arg name="disable_arm_gravity" default="true" />
+    <arg name="disable_chassis_gravity" default="false" />
+    <arg name="simple_chassis_collision" default="false" />
+    <arg name="enable_base_sensors" default="false" />
+    <arg name="frictionless_planar_contacts" default="false" />
+    <arg name="disable_arm_collisions" default="false" />
+    <arg name="enable_arm_contacts" default="false" />
+    <arg name="gui" default="true" />
+    <arg name="paused" default="false" />
+    <arg name="verify_controllers" default="true" />
+    <arg name="enable_arm_idle_hold" default="true" />
+    <!--
+      Clearance-verified arm pose shared with the training environments.
+      The previous pose placed the link4 mesh about 1 mm above the ground,
+      so contact tolerance could drive the arm through the chassis.
+    -->
+    <arg name="initial_joint1" default="0.0" />
+    <arg name="initial_joint2" default="-0.30" />
+    <arg name="initial_joint3" default="0.03" />
+    <arg name="initial_joint4" default="0.0" />
+    <arg name="initial_joint5" default="0.03" />
+    <arg name="initial_joint6" default="0.0" />
+    <!-- z=pi/2 cancels the CAD -pi/2 mount, so physical forward is world +X. -->
+    <arg name="initial_planar_yaw" default="1.5708" />
+
     <param name="/use_sim_time" value="true" />
 
-    <!-- 启动空 Gazebo 世界 -->
     <include file="$(find gazebo_ros)/launch/empty_world.launch">
-        <arg name="paused" value="false" />
+        <arg name="paused" value="$(arg paused)" />
         <arg name="use_sim_time" value="true" />
-        <arg name="gui" value="true" />
+        <arg name="gui" value="$(arg gui)" />
     </include>
 
-    <!-- 加载 URDF -->
     <param name="robot_description"
-           textfile="$(find mobile_arm_description)/urdf/mobile_arm.urdf" />
+           command="$(find xacro)/xacro '$(find mobile_arm_description)/urdf/mobile_arm.urdf.xacro' fixed_base_diagnostic:=$(arg fixed_base_diagnostic) disable_arm_gravity:=$(arg disable_arm_gravity) disable_chassis_gravity:=$(arg disable_chassis_gravity) simple_chassis_collision:=$(arg simple_chassis_collision) enable_base_sensors:=$(arg enable_base_sensors) enable_arm_contacts:=$(arg enable_arm_contacts) frictionless_planar_contacts:=$(arg frictionless_planar_contacts) disable_arm_collisions:=$(arg disable_arm_collisions)" />
 
-    <!-- 发布机器人 TF -->
     <node pkg="robot_state_publisher"
           type="robot_state_publisher"
           name="robot_state_publisher" />
 
-    <!-- 生成模型到 Gazebo -->
-    <node pkg="gazebo_ros"
+    <node if="$(arg fixed_base_diagnostic)"
+          pkg="gazebo_ros"
           type="spawn_model"
-          name="spawn_mobile_arm"
+          name="spawn_mobile_arm_fixed"
           output="screen"
-          args="-urdf -param robot_description -model mobile_arm -x 0 -y 0 -z 0" />
+          args="-urdf -param robot_description -model mobile_arm -x 0 -y 0 -z 0
+                -J joint1 $(arg initial_joint1)
+                -J joint2 $(arg initial_joint2)
+                -J joint3 $(arg initial_joint3)
+                -J joint4 $(arg initial_joint4)
+                -J joint5 $(arg initial_joint5)
+                -J joint6 $(arg initial_joint6)" />
 
-    <!-- 加载控制器参数 -->
+    <node unless="$(arg fixed_base_diagnostic)"
+          pkg="gazebo_ros"
+          type="spawn_model"
+          name="spawn_mobile_arm_planar"
+          output="screen"
+          args="-urdf -param robot_description -model mobile_arm -x 0 -y 0 -z 0
+                -J x 0.0
+                -J y 0.0
+                -J z $(arg initial_planar_yaw)
+                -J joint1 $(arg initial_joint1)
+                -J joint2 $(arg initial_joint2)
+                -J joint3 $(arg initial_joint3)
+                -J joint4 $(arg initial_joint4)
+                -J joint5 $(arg initial_joint5)
+                -J joint6 $(arg initial_joint6)" />
+
+    <!--
+      Fixed-joint reduction can overwrite turnGravityOff in the dynamic
+      planar chain.  Enforce and verify the requested arm setting against
+      Gazebo's runtime link properties after the model has spawned.
+    -->
+    <node if="$(arg disable_arm_gravity)"
+          pkg="mobile_arm_description"
+          type="enforce_link_gravity.py"
+          name="enforce_mobile_arm_link_gravity"
+          output="screen">
+        <param name="model_name" value="mobile_arm" />
+        <param name="timeout" value="30.0" />
+        <rosparam param="links">[link1, link2, link3, link4, link5, link6]</rosparam>
+    </node>
+
+    <!-- Six velocity-controlled arm joints are available in both modes. -->
     <rosparam file="$(find mobile_arm_description)/config/mobile_arm_controllers.yaml"
               command="load" />
+    <!-- Optional x/y controllers exist only in planar-base mode. -->
+    <rosparam unless="$(arg fixed_base_diagnostic)"
+              file="$(find mobile_arm_description)/config/mobile_arm_planar_controllers.yaml"
+              command="load" />
 
-    <!-- 启动控制器 -->
     <node pkg="controller_manager"
           type="spawner"
-          name="controller_spawner"
+          name="arm_controller_spawner"
           output="screen"
-          args="
-          joint_state_controller
-          x_velocity_controller
-          y_velocity_controller
-          z_velocity_controller
-          sway_velocity_controller
-          joint1_velocity_controller
-          joint2_velocity_controller
-          joint3_velocity_controller
-          joint4_velocity_controller
-          joint5_velocity_controller
-          joint6_velocity_controller" />
+          args="joint_state_controller joint1_velocity_controller joint2_velocity_controller joint3_velocity_controller joint4_velocity_controller joint5_velocity_controller joint6_velocity_controller" />
+
+    <!--
+      Preserve the current arm pose only while no external velocity command
+      is arriving. Active HRL/manual publishers always take precedence.
+    -->
+    <node if="$(arg enable_arm_idle_hold)"
+          pkg="mobile_arm_description"
+          type="arm_idle_position_hold.py"
+          name="arm_idle_position_hold"
+          output="screen">
+        <param name="command_timeout" value="0.30" />
+        <param name="control_rate" value="50.0" />
+        <!-- Gazebo's reported joint2 velocity can disagree with observed
+             position drift near a joint stop.  Use robust position-only
+             feedback for idle holding, and leave ample correction authority
+             during planar-base acceleration.  The 0.15 rad/s clamp remains
+             well below the arm URDF's 0.5 rad/s joint velocity limits. -->
+        <param name="position_gain" value="4.0" />
+        <param name="velocity_gain" value="0.0" />
+        <param name="max_revolute_velocity" value="0.15" />
+        <param name="max_prismatic_velocity" value="0.01" />
+        <!-- Seed the hold target explicitly.  spawn_model applies -J through
+             a delayed SetModelConfiguration call, so capturing the first
+             /joint_states sample can otherwise lock the all-zero pose. -->
+        <rosparam param="initial_positions" subst_value="true">
+          [$(arg initial_joint1), $(arg initial_joint2),
+           $(arg initial_joint3), $(arg initial_joint4),
+           $(arg initial_joint5), $(arg initial_joint6)]
+        </rosparam>
+    </node>
+
+    <node unless="$(arg fixed_base_diagnostic)"
+          pkg="controller_manager"
+          type="spawner"
+          name="planar_base_controller_spawner"
+          output="screen"
+          args="x_velocity_controller y_velocity_controller z_velocity_controller" />
+
+    <!-- A required verifier stays alive after confirming startup. -->
+    <node if="$(arg verify_controllers)"
+          pkg="mobile_arm_description"
+          type="verify_controllers.py"
+          name="verify_mobile_arm_controllers"
+          output="screen"
+          required="true">
+        <param name="timeout" value="30.0" />
+        <rosparam if="$(arg fixed_base_diagnostic)"
+                  param="expected_controllers">[joint_state_controller, joint1_velocity_controller, joint2_velocity_controller, joint3_velocity_controller, joint4_velocity_controller, joint5_velocity_controller, joint6_velocity_controller]</rosparam>
+        <rosparam unless="$(arg fixed_base_diagnostic)"
+                  param="expected_controllers">[joint_state_controller, x_velocity_controller, y_velocity_controller, z_velocity_controller, joint1_velocity_controller, joint2_velocity_controller, joint3_velocity_controller, joint4_velocity_controller, joint5_velocity_controller, joint6_velocity_controller]</rosparam>
+    </node>
 </launch>

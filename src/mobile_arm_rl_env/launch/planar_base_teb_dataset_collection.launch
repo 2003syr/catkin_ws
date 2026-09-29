@@ -1,0 +1,58 @@
+<launch>
+    <!-- TEB plans and controls; the collector only records successful,
+         contact-free demonstrations using the same observable local path. -->
+    <arg name="gui" default="true" />
+    <arg name="episodes" default="10" />
+    <arg name="max_attempts" default="20" />
+    <arg name="minimum_successes_per_goal" default="1" />
+    <arg name="output_path"
+         default="/tmp/mobile_arm_rl_training/teb_planar_teacher.npz" />
+
+    <include file="$(find mobile_arm_rl_env)/launch/planar_base_teb_demo.launch">
+        <arg name="gui" value="$(arg gui)" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="collect_teb_planar_dataset.py"
+          name="collect_teb_planar_dataset"
+          output="screen">
+        <param name="episodes" value="$(arg episodes)" />
+        <param name="max_attempts" value="$(arg max_attempts)" />
+        <param name="minimum_successes_per_goal"
+               value="$(arg minimum_successes_per_goal)" />
+        <param name="output_path" value="$(arg output_path)" />
+        <param name="goal_frame" value="base_link" />
+        <param name="local_plan_topic"
+               value="/move_base/TebLocalPlannerROS/local_plan" />
+        <param name="cmd_vel_topic" value="/teb_cmd_vel" />
+        <param name="sample_rate" value="10.0" />
+        <param name="maximum_episode_seconds" value="180.0" />
+        <param name="message_timeout" value="0.75" />
+        <param name="minimum_episode_samples" value="20" />
+        <param name="scan_clip" value="10.0" />
+        <param name="lookahead_distance" value="0.50" />
+        <param name="path_point_spacing" value="0.10" />
+        <param name="path_remaining_scale" value="1.0" />
+        <param name="max_linear_speed" value="0.05" />
+        <param name="max_yaw_rate" value="0.125" />
+        <!-- The obstacle is centred at approximately (1.35, -0.13).
+             Alternating far/home poses produces central, upper and lower
+             bypasses instead of duplicating one deterministic trajectory. -->
+        <rosparam param="goals">
+          - [1.82, -0.13,  1.57079632679]
+          - [0.00,  0.00,  0.0]
+          - [1.82,  0.20, -1.57079632679]
+          - [0.00,  0.12,  0.0]
+          - [1.82, -0.46,  1.57079632679]
+          - [0.00, -0.12,  0.0]
+        </rosparam>
+        <rosparam param="goal_labels">
+          - frontal_far
+          - frontal_home
+          - upper_far
+          - upper_home
+          - lower_far
+          - lower_home
+        </rosparam>
+    </node>
+</launch>

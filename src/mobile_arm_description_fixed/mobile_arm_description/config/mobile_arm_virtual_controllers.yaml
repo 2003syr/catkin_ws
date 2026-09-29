@@ -1,0 +1,16 @@
+# A/B diagnostic only. The normal fixed-base launch does not load these.
+x_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: x
+
+y_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: y
+
+z_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: z
+
+sway_velocity_controller:
+  type: velocity_controllers/JointVelocityController
+  joint: sway

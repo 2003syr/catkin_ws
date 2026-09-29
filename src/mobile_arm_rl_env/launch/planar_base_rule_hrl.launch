@@ -1,0 +1,29 @@
+<launch>
+    <!--
+      First-stage planar-base acceptance launch:
+        - rule-based high level
+        - proportional x/y low-level base controller
+        - existing Jacobian DLS arm controller after entering arm range
+
+      Start mobile_arm_description/gazebo_planar_control.launch first.
+    -->
+    <arg name="target_x" default="1.20" />
+    <arg name="target_y" default="0.20" />
+    <arg name="target_z" default="0.40" />
+    <arg name="high_interval" default="10" />
+    <arg name="max_position_subgoal" default="0.10" />
+    <arg name="base_gain" default="5.0" />
+
+    <include file="$(find mobile_arm_rl_env)/launch/rule_based_hrl.launch">
+        <arg name="target_x" value="$(arg target_x)" />
+        <arg name="target_y" value="$(arg target_y)" />
+        <arg name="target_z" value="$(arg target_z)" />
+        <arg name="low_policy_type" value="rule_based" />
+        <arg name="high_interval" value="$(arg high_interval)" />
+        <arg name="max_position_subgoal"
+             value="$(arg max_position_subgoal)" />
+        <arg name="enable_planar_base" value="true" />
+        <arg name="enable_base_motion" value="true" />
+        <arg name="base_gain" value="$(arg base_gain)" />
+    </include>
+</launch>

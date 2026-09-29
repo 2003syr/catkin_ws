@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "recommended_step_budget": 3200,
+  "budget_mode": "fixed",
+  "generator": {
+    "type": "single_box_subgoal_v1",
+    "count": 100,
+    "seed": 789,
+    "no_obstacle_fraction": 0.2,
+    "initial_base_x_range": [-0.03, 0.03],
+    "initial_base_y_range": [-0.04, 0.04],
+    "initial_base_yaw_range": [1.4708, 1.6708],
+    "box_center_x_range": [0.7, 0.84],
+    "box_center_y_range": [-0.23, -0.03],
+    "box_size_xy": [0.2, 0.32],
+    "base_half_length": 0.56,
+    "path_clearance": 0.15,
+    "final_goal_x_margin_range": [0.03, 0.09],
+    "final_goal_y_range": [-0.25, 0.05],
+    "direct_goal_x_range": [1.2, 1.7],
+    "safe_base_x_range": [-1.75, 1.75],
+    "safe_base_y_range": [-1.75, 1.75],
+    "final_yaw_offset_range": [-0.12, 0.12]
+  }
+}

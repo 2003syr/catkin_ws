@@ -1,12 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import threading
+import time
+
 import rospy
 import numpy as np
 import tf
 
-from sensor_msgs.msg import JointState
+from gazebo_msgs.msg import ContactsState
+from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Float64
+
+from hrl.arm_chassis_guard import ArmChassisInterferenceGuard
+from hrl.laser_scan_sectors import SECTOR_NAMES, bin_scan, sectorize_scan
+from training.tracked_base_kinematics import TRACKED_FORWARD_YAW_OFFSET
 
 
 class MobileArmReachEnv(object):
@@ -23,6 +31,64 @@ class MobileArmReachEnv(object):
         self.base_frame = rospy.get_param("~base_frame", "base_link")
         self.ee_frame = rospy.get_param("~ee_frame", "link6")
         self.target_frame = rospy.get_param("~target_frame", "target_frame")
+
+        # Five sectors cover the full 360-degree plane.  Keeping this compact
+        # representation preserves the 46-D ROS observation while allowing a
+        # task-specific 11-D base-policy adapter.
+        self.scan_topic = rospy.get_param("~scan_topic", "/scan")
+        self.contact_topic = rospy.get_param(
+            "~contact_topic", "/base_contacts"
+        )
+        self.arm_contact_topic = str(
+            rospy.get_param("~arm_contact_topic", "")
+        ).strip()
+        self.scan_output_max = float(
+            rospy.get_param("~scan_output_max", 10.0)
+        )
+        self.scan_bin_count = int(
+            rospy.get_param("~scan_bin_count", 36)
+        )
+        self.scan_stale_timeout = float(
+            rospy.get_param("~scan_stale_timeout", 1.0)
+        )
+        self.scan_wait_timeout = float(
+            rospy.get_param("~scan_wait_timeout", 10.0)
+        )
+        self.require_scan = bool(rospy.get_param("~require_scan", False))
+        self.collision_ignore_names = tuple(
+            str(value)
+            for value in rospy.get_param(
+                "~collision_ignore_names", ["ground_plane"]
+            )
+        )
+        if self.scan_output_max <= 0.0:
+            raise ValueError("scan_output_max must be positive")
+        if self.scan_bin_count <= 0:
+            raise ValueError("scan_bin_count must be positive")
+        if self.scan_stale_timeout <= 0.0 or self.scan_wait_timeout <= 0.0:
+            raise ValueError("scan timeouts must be positive")
+
+        self._sensor_lock = threading.Lock()
+        self._scan_condition = threading.Condition(self._sensor_lock)
+        self._scan_received = threading.Event()
+        self._contact_received = threading.Event()
+        self._scan_info = np.full(5, self.scan_output_max, dtype=np.float64)
+        self._scan_bins = np.full(
+            self.scan_bin_count,
+            self.scan_output_max,
+            dtype=np.float64,
+        )
+        self._scan_wall_time = None
+        self._collision_active = False
+        self._collision_names = []
+        self._contact_sources = {
+            "base": False,
+            "arm": False,
+        }
+        self._contact_source_names = {
+            "base": [],
+            "arm": [],
+        }
 
         # TF 监听器
         self.listener = tf.TransformListener()
@@ -44,25 +110,46 @@ class MobileArmReachEnv(object):
             "joint5",
             "joint6"
         ]
+        self.enable_planar_base = bool(
+            rospy.get_param("~enable_planar_base", False)
+        )
+        # x/y/yaw are internal planar pose coordinates.  Stage-specific base
+        # policies expose only [linear velocity, yaw rate] and perform the
+        # nonholonomic mapping before these controllers are published.
+        self.planar_base_joints = ["x", "y", "z"]
+        self.arm_joints = self.expected_joints[4:10]
+        if self.enable_planar_base:
+            self.locked_virtual_joints = {"sway"}
+            # Planar yaw is an unbounded configuration coordinate.  Treating
+            # it like a finite revolute joint eventually blocked one turning
+            # direction after several training episodes.
+            self.continuous_joints = {"z"}
+            self.controlled_joints = (
+                self.planar_base_joints + self.arm_joints
+            )
+        else:
+            self.locked_virtual_joints = {"x", "y", "z", "sway"}
+            self.continuous_joints = set()
+            self.controlled_joints = list(self.arm_joints)
 
         # =========================
-        # 3. 临时关节限位
+        # 3. 机械臂位置限位
         # =========================
         # 注意：
-        # 这里必须和 URDF / controller 中的临时限位保持一致。
-        # 后面拿到真实机械臂参数后，应统一替换为真实限位。
+        # 这里与 URDF 的物理限位保持一致。当前数值是为仿真和底盘
+        # 净空选取的保守范围；拿到真实机械臂规格后应统一替换。
         self.joint_limits = {
             "x": (-2.0, 2.0),
             "y": (-2.0, 2.0),
-            "z": (-3.14, 3.14),
+            "z": (-6.28, 6.28),
             "sway": (-1.57, 1.57),
 
-            "joint1": (-3.14, 3.14),
-            "joint2": (-1.57, 1.57),
-            "joint3": (-0.20, 0.20),
-            "joint4": (-3.14, 3.14),
-            "joint5": (-0.20, 0.20),
-            "joint6": (-3.14, 3.14)
+            "joint1": (-1.57, 1.57),
+            "joint2": (-1.45, 0.0),
+            "joint3": (0.00, 0.15),
+            "joint4": (-1.57, 1.57),
+            "joint5": (0.00, 0.15),
+            "joint6": (-1.57, 1.57)
         }
 
         # =========================
@@ -126,6 +213,41 @@ class MobileArmReachEnv(object):
             "joint6": 0.30
         }
 
+        # A joint can remain inside its actuator limits while a distal arm
+        # link enters the chassis.  Keep that configuration-space constraint
+        # in the existing post-policy safety layer.
+        self.enable_chassis_interference_guard = bool(
+            rospy.get_param(
+                "~enable_chassis_interference_guard",
+                True,
+            )
+        )
+        self.arm_chassis_guard = None
+        self.last_chassis_guard_info = {
+            "reason": "disabled",
+            "scale": 1.0,
+            "current_clearance": float("inf"),
+            "predicted_clearance": float("inf"),
+            "closest_link": "none",
+            "predicted_link": "none",
+        }
+        if self.enable_chassis_interference_guard:
+            self.arm_chassis_guard = ArmChassisInterferenceGuard(
+                hard_clearance=rospy.get_param(
+                    "~chassis_hard_clearance",
+                    0.010,
+                ),
+                soft_clearance=rospy.get_param(
+                    "~chassis_soft_clearance",
+                    0.050,
+                ),
+                prediction_horizon=rospy.get_param(
+                    "~chassis_prediction_horizon",
+                    0.25,
+                ),
+                robot_description="/robot_description",
+            )
+
         # =========================
         # 6. Gazebo velocity controller 发布器
         # =========================
@@ -135,7 +257,9 @@ class MobileArmReachEnv(object):
         # ...
         self.cmd_publishers = {}
 
-        for joint_name in self.expected_joints:
+        # The default mode publishes only arm commands. The isolated planar
+        # launch additionally exposes x/y while z/sway remain locked.
+        for joint_name in self.controlled_joints:
             topic_name = "/{}_velocity_controller/command".format(joint_name)
 
             self.cmd_publishers[joint_name] = rospy.Publisher(
@@ -158,12 +282,48 @@ class MobileArmReachEnv(object):
         self.success_threshold = 0.05
         self.max_steps = 300
         self.step_count = 0
+        self._stop_complete = False
 
         # 订阅 joint_states
         rospy.Subscriber("/joint_states", JointState, self.joint_state_callback)
+        rospy.Subscriber(
+            self.scan_topic,
+            LaserScan,
+            self.scan_callback,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            self.contact_topic,
+            ContactsState,
+            self.contact_callback,
+            callback_args="base",
+            queue_size=10,
+        )
+        if self.arm_contact_topic and (
+                self.arm_contact_topic != self.contact_topic):
+            rospy.Subscriber(
+                self.arm_contact_topic,
+                ContactsState,
+                self.contact_callback,
+                callback_args="arm",
+                queue_size=10,
+            )
 
         rospy.loginfo("Waiting for TF and controller publishers...")
+        rospy.loginfo(
+            "Planar base control=%s controlled_joints=%s",
+            self.enable_planar_base,
+            self.controlled_joints,
+        )
         rospy.sleep(2.0)
+        if self.require_scan and not self._scan_received.wait(
+                self.scan_wait_timeout):
+            raise RuntimeError(
+                "No LaserScan received on {} within {:.1f}s".format(
+                    self.scan_topic,
+                    self.scan_wait_timeout,
+                )
+            )
 
     def joint_state_callback(self, msg):
         """
@@ -180,6 +340,131 @@ class MobileArmReachEnv(object):
                 self.joint_vel_dict[name] = msg.velocity[i]
             else:
                 self.joint_vel_dict[name] = 0.0
+
+    def scan_callback(self, msg):
+        """Store both legacy sectors and a policy-facing angular profile."""
+        try:
+            sectors = sectorize_scan(
+                msg.ranges,
+                msg.angle_min,
+                msg.angle_increment,
+                msg.range_min,
+                msg.range_max,
+                output_max=self.scan_output_max,
+            )
+            scan_bins = bin_scan(
+                msg.ranges,
+                msg.angle_min,
+                msg.angle_increment,
+                msg.range_min,
+                msg.range_max,
+                output_max=self.scan_output_max,
+                bin_count=self.scan_bin_count,
+            )
+        except (TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "Invalid LaserScan on %s: %s",
+                self.scan_topic,
+                str(error),
+            )
+            return
+        with self._scan_condition:
+            self._scan_info = sectors.astype(np.float64)
+            self._scan_bins = scan_bins.astype(np.float64)
+            self._scan_wall_time = time.time()
+            self._scan_received.set()
+            self._scan_condition.notify_all()
+
+    def contact_callback(self, msg, source="base"):
+        """Track base and arm contacts while ignoring the ground plane."""
+        collision_names = []
+        for state in msg.states:
+            names = "{} {}".format(
+                state.collision1_name,
+                state.collision2_name,
+            )
+            if any(
+                    ignored and ignored in names
+                    for ignored in self.collision_ignore_names):
+                continue
+            collision_names.append(names)
+        with self._sensor_lock:
+            source = str(source) if source in ("base", "arm") else "base"
+            self._contact_sources[source] = bool(collision_names)
+            self._contact_source_names[source] = collision_names
+            self._collision_active = bool(
+                self._contact_sources["base"]
+                or self._contact_sources["arm"]
+            )
+            self._collision_names = (
+                list(self._contact_source_names["base"])
+                + list(self._contact_source_names["arm"])
+            )
+        self._contact_received.set()
+
+    def get_sensor_state(self):
+        with self._sensor_lock:
+            scan_info = self._scan_info.copy()
+            scan_wall_time = self._scan_wall_time
+            collision_active = bool(self._collision_active)
+            collision_names = list(self._collision_names)
+        scan_age = (
+            float("inf")
+            if scan_wall_time is None
+            else max(0.0, time.time() - scan_wall_time)
+        )
+        scan_ok = bool(
+            self._scan_received.is_set()
+            and scan_age <= self.scan_stale_timeout
+        )
+        return (
+            scan_info,
+            scan_ok,
+            scan_age,
+            collision_active,
+            collision_names,
+        )
+
+    def wait_for_fresh_scan(self, timeout=None):
+        """Wait for a new scan without ever accepting stale obstacle data.
+
+        Gazebo can pause a sensor callback briefly while a model is reset or
+        while the simulator is under load.  The old behavior raised as soon
+        as the last scan exceeded ``scan_stale_timeout`` and consequently
+        killed a multi-hour training run.  Here the environment blocks on the
+        scan condition for at most ``scan_wait_timeout`` wall-clock seconds.
+        A genuinely missing sensor still fails closed after that deadline.
+        """
+        timeout = (
+            self.scan_wait_timeout if timeout is None else float(timeout)
+        )
+        if timeout <= 0.0:
+            raise ValueError("fresh scan wait timeout must be positive")
+        started = time.time()
+        deadline = started + timeout
+        with self._scan_condition:
+            while not rospy.is_shutdown():
+                now = time.time()
+                scan_age = (
+                    float("inf")
+                    if self._scan_wall_time is None
+                    else max(0.0, now - self._scan_wall_time)
+                )
+                if (
+                        self._scan_received.is_set()
+                        and scan_age <= self.scan_stale_timeout):
+                    return True, scan_age, max(0.0, now - started)
+                remaining = deadline - now
+                if remaining <= 0.0:
+                    return False, scan_age, max(0.0, now - started)
+                self._scan_condition.wait(timeout=remaining)
+        return False, float("inf"), max(0.0, time.time() - started)
+
+    def get_scan_bins(self):
+        """Return the latest fixed-angle scan profile."""
+        with self._sensor_lock:
+            return self._scan_bins.copy()
 
     def get_ordered_joint_state(self):
         """
@@ -207,6 +492,11 @@ class MobileArmReachEnv(object):
         margins = []
 
         for i, name in enumerate(self.expected_joints):
+            if (
+                    name in self.locked_virtual_joints
+                    or name in self.continuous_joints):
+                margins.append(1.0)
+                continue
             q_i = q[i]
 
             q_min, q_max = self.joint_limits[name]
@@ -259,7 +549,10 @@ class MobileArmReachEnv(object):
 
         for i, name in enumerate(self.expected_joints):
             max_vel = self.action_max_vel[name]
-            cmd_dict[name] = float(action[i] * max_vel)
+            if name in self.locked_virtual_joints:
+                cmd_dict[name] = 0.0
+            else:
+                cmd_dict[name] = float(action[i] * max_vel)
 
         return cmd_dict
 
@@ -283,6 +576,18 @@ class MobileArmReachEnv(object):
             q_min, q_max = self.joint_limits[joint_name]
             hard_margin = self.limit_hard_margin[joint_name]
             soft_margin = self.limit_soft_margin[joint_name]
+
+            if joint_name in self.continuous_joints:
+                safe_cmd_dict[joint_name] = float(cmd)
+                safety_info[joint_name] = {
+                    "q": float(q_i),
+                    "cmd_raw": float(cmd),
+                    "cmd_safe": float(cmd),
+                    "dist_to_lower": float("inf"),
+                    "dist_to_upper": float("inf"),
+                    "reason": "continuous_joint"
+                }
+                continue
 
             dist_to_lower = q_i - q_min
             dist_to_upper = q_max - q_i
@@ -333,9 +638,72 @@ class MobileArmReachEnv(object):
                 "reason": reason
             }
 
+        if self.arm_chassis_guard is not None:
+            arm_positions = np.asarray(q[4:10], dtype=np.float64)
+            arm_velocity = np.asarray([
+                safe_cmd_dict[name] for name in self.arm_joints
+            ], dtype=np.float64)
+            try:
+                filtered_velocity, guard_info = (
+                    self.arm_chassis_guard.filter_velocity(
+                        arm_positions,
+                        arm_velocity,
+                    )
+                )
+            except Exception as error:
+                # Fail closed: a broken clearance estimate must never turn
+                # into an unfiltered arm command.
+                filtered_velocity = np.zeros(6, dtype=np.float64)
+                guard_info = {
+                    "reason": "chassis_guard_error",
+                    "scale": 0.0,
+                    "current_clearance": float("nan"),
+                    "predicted_clearance": float("nan"),
+                    "closest_link": "unknown",
+                    "predicted_link": "unknown",
+                    "error": str(error),
+                }
+                rospy.logerr_throttle(
+                    2.0,
+                    "Arm-chassis guard failed closed: %s",
+                    str(error),
+                )
+
+            self.last_chassis_guard_info = dict(guard_info)
+            guard_reason = guard_info["reason"]
+            for index, joint_name in enumerate(self.arm_joints):
+                previous_command = safe_cmd_dict[joint_name]
+                safe_cmd_dict[joint_name] = float(
+                    filtered_velocity[index]
+                )
+                joint_info = safety_info[joint_name]
+                joint_info.update({
+                    "chassis_clearance": float(
+                        guard_info["current_clearance"]
+                    ),
+                    "predicted_chassis_clearance": float(
+                        guard_info["predicted_clearance"]
+                    ),
+                    "chassis_closest_link": guard_info["closest_link"],
+                    "chassis_predicted_link": guard_info["predicted_link"],
+                    "chassis_velocity_scale": float(guard_info["scale"]),
+                })
+                command_changed = not np.isclose(
+                    previous_command,
+                    safe_cmd_dict[joint_name],
+                    atol=1.0e-9,
+                )
+                if guard_reason != "safe" and (
+                        command_changed
+                        or abs(previous_command) > 1.0e-9):
+                    if joint_info["reason"] == "safe":
+                        joint_info["reason"] = guard_reason
+                    else:
+                        joint_info["reason"] += "+" + guard_reason
+
         return safe_cmd_dict, safety_info
 
-    def publish_cmd_dict(self, cmd_dict):
+    def publish_cmd_dict(self, cmd_dict, joint_names=None):
         """
         将 cmd_dict 发布到 Gazebo velocity controller。
 
@@ -346,7 +714,19 @@ class MobileArmReachEnv(object):
             ...
         }
         """
-        for joint_name in self.expected_joints:
+        if joint_names is None:
+            joint_names = self.controlled_joints
+        else:
+            joint_names = tuple(joint_names)
+            unknown_joints = set(joint_names) - set(self.controlled_joints)
+            if unknown_joints:
+                raise ValueError(
+                    "Cannot publish uncontrolled joints: {}".format(
+                        sorted(unknown_joints)
+                    )
+                )
+
+        for joint_name in joint_names:
             if joint_name not in cmd_dict:
                 continue
 
@@ -435,14 +815,78 @@ class MobileArmReachEnv(object):
             self.ee_frame
         )
 
-        base_to_target_dist = np.linalg.norm(target_in_base_pos)
-        ee_to_target_dist = np.linalg.norm(target_in_ee_pos)
-
         q, dq = self.get_ordered_joint_state()
         q_margin = self.compute_joint_margin(q)
+        base_to_target_vector = np.asarray(
+            target_in_base_pos,
+            dtype=np.float64,
+        ).copy()
+        if self.enable_planar_base:
+            base_to_target_vector[0:2] -= q[0:2]
+        yaw = float(q[2]) if self.enable_planar_base else 0.0
+        heading = (
+            yaw + TRACKED_FORWARD_YAW_OFFSET
+            if self.enable_planar_base else 0.0
+        )
+        cosine = np.cos(heading)
+        sine = np.sin(heading)
+        base_to_target_body = base_to_target_vector.copy()
+        base_to_target_body[0] = (
+            cosine * base_to_target_vector[0]
+            + sine * base_to_target_vector[1]
+        )
+        base_to_target_body[1] = (
+            -sine * base_to_target_vector[0]
+            + cosine * base_to_target_vector[1]
+        )
+        base_to_target_dist = np.linalg.norm(base_to_target_vector)
+        ee_to_target_dist = np.linalg.norm(target_in_ee_pos)
 
-        # 暂时没有 /scan，先用默认值表示无障碍物
-        scan_info = np.array([10.0, 10.0, 10.0, 10.0, 10.0])
+        # Use the real 360-degree scan reduced to five fixed planar sectors.
+        (
+            scan_info,
+            scan_ok,
+            scan_age,
+            collision_active,
+            collision_names,
+        ) = self.get_sensor_state()
+        if self.require_scan and not scan_ok:
+            stale_age = scan_age
+            rospy.logwarn(
+                "LaserScan on %s is stale (age=%.3fs); waiting up to %.1fs "
+                "for a fresh frame",
+                self.scan_topic,
+                stale_age,
+                self.scan_wait_timeout,
+            )
+            recovered, scan_age, waited = self.wait_for_fresh_scan(
+                self.scan_wait_timeout
+            )
+            if not recovered:
+                raise RuntimeError(
+                    "LaserScan on {} did not recover within {:.1f}s "
+                    "(last_age={:.3f}s)".format(
+                        self.scan_topic,
+                        self.scan_wait_timeout,
+                        scan_age,
+                    )
+                )
+            (
+                scan_info,
+                scan_ok,
+                scan_age,
+                collision_active,
+                collision_names,
+            ) = self.get_sensor_state()
+            rospy.logwarn(
+                "LaserScan on %s recovered after %.3fs "
+                "(stale_age=%.3fs fresh_age=%.3fs)",
+                self.scan_topic,
+                waited,
+                stale_age,
+                scan_age,
+            )
+        scan_bins = self.get_scan_bins()
 
         obs_vec = np.concatenate([
             target_in_base_pos,
@@ -471,6 +915,10 @@ class MobileArmReachEnv(object):
             "ee_in_base_pos": ee_in_base_pos,
 
             "base_to_target_pos": target_in_base_pos,
+            "base_to_target_relative_pos": base_to_target_vector,
+            "base_to_target_body_pos": base_to_target_body,
+            "planar_base_yaw": yaw,
+            "planar_base_heading": heading,
             "ee_to_target_pos": target_in_ee_pos,
 
             "base_to_target_dist": base_to_target_dist,
@@ -480,6 +928,13 @@ class MobileArmReachEnv(object):
             "joint_vel": dq,
             "q_margin": q_margin,
             "scan_info": scan_info,
+            "scan_bins": scan_bins,
+            "scan_bin_count": self.scan_bin_count,
+            "scan_sector_names": SECTOR_NAMES,
+            "scan_ok": scan_ok,
+            "scan_age": scan_age,
+            "collision": collision_active,
+            "collision_names": collision_names,
 
             "tf_ok": ok1 and ok2 and ok3
         }
@@ -539,7 +994,7 @@ class MobileArmReachEnv(object):
         obs = self.get_observation()
         return obs
 
-    def step(self, action):
+    def step(self, action, publish_joints=None):
         """
         将 action 解码、安全过滤并发布到 Gazebo 控制器，然后读取状态、计算奖励。
         """
@@ -557,7 +1012,14 @@ class MobileArmReachEnv(object):
         )
 
         # 4. 发布安全后的速度指令
-        self.publish_cmd_dict(safe_cmd_dict)
+        # Full HRL execution keeps the historical ten-dimensional publish
+        # contract.  A stage-specific wrapper may explicitly publish only
+        # the joints it owns; this prevents a base-only policy from racing an
+        # independent arm position-hold controller with six zero commands.
+        self.publish_cmd_dict(
+            safe_cmd_dict,
+            joint_names=publish_joints,
+        )
 
         # 5. 等待 Gazebo 执行一小步
         rospy.sleep(0.1)
@@ -566,19 +1028,66 @@ class MobileArmReachEnv(object):
         obs = self.get_observation()
         reward, done, dist, success = self.compute_reward_done(obs)
 
+        velocity_tracking = {}
+        max_normalized_error = 0.0
+        max_planar_normalized_error = 0.0
+        for index, joint_name in enumerate(self.expected_joints):
+            desired = float(safe_cmd_dict[joint_name])
+            measured = float(obs["joint_vel"][index])
+            error = desired - measured
+            normalized_error = abs(error) / self.action_max_vel[joint_name]
+            velocity_tracking[joint_name] = {
+                "desired": desired,
+                "measured": measured,
+                "error": error,
+                "normalized_error": normalized_error,
+            }
+            if joint_name in self.arm_joints:
+                max_normalized_error = max(
+                    max_normalized_error,
+                    normalized_error,
+                )
+            if joint_name in self.planar_base_joints:
+                max_planar_normalized_error = max(
+                    max_planar_normalized_error,
+                    normalized_error,
+                )
+
         info = {
             "dist": dist,
             "success": success,
+            "collision": bool(obs.get("collision", False)),
+            "collision_names": list(obs.get("collision_names", [])),
+            "tf_ok": bool(obs.get("tf_ok", False)),
             "cmd_dict": safe_cmd_dict,
             "raw_cmd_dict": raw_cmd_dict,
-            "safety_info": safety_info
+            "safety_info": safety_info,
+            "velocity_tracking": velocity_tracking,
+            "max_arm_velocity_tracking_error": max_normalized_error,
+            "max_planar_velocity_tracking_error": (
+                max_planar_normalized_error
+            ),
+            "arm_chassis_guard": dict(self.last_chassis_guard_info),
+            "published_joints": list(
+                self.controlled_joints
+                if publish_joints is None else publish_joints
+            ),
         }
 
         return obs, reward, done, info
 
     def stop(self):
-        """Stop every controller. Safe to call from a finally block."""
-        self.publish_zero_cmd()
+        """Stop every controller and make shutdown visible in the log."""
+        if self._stop_complete:
+            return
+        rospy.loginfo("HRL stop requested: publishing zero velocity to all controllers")
+        # Repeat with wall-clock sleeps so shutdown still works when simulated
+        # time has already stopped.
+        for _ in range(3):
+            self.publish_zero_cmd()
+            time.sleep(0.05)
+        self._stop_complete = True
+        rospy.loginfo("HRL stop complete: zero velocity command published 3 times")
 
 
 if __name__ == "__main__":

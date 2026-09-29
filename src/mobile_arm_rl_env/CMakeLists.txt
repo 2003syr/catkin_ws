@@ -8,10 +8,16 @@ project(mobile_arm_rl_env)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  actionlib
+  actionlib_msgs
+  gazebo_msgs
   geometry_msgs
+  move_base_msgs
+  nav_msgs
   rospy
   sensor_msgs
   std_msgs
+  std_srvs
   tf
 )
 
@@ -164,12 +170,76 @@ include_directories(
 catkin_install_python(PROGRAMS
   scripts/mobile_arm_env_check.py
   scripts/run_rule_based_hrl.py
+  scripts/verify_arm_chassis_clearance.py
+  scripts/verify_planar_sensors.py
+  scripts/navigation/planar_base_odom.py
+  scripts/navigation/planar_cmd_vel_bridge.py
+  scripts/navigation/geometric_planar_baseline.py
+  scripts/training/collect_rule_based_dataset.py
+  scripts/training/collect_planar_tracking_dataset.py
+  scripts/training/collect_teb_planar_dataset.py
+  scripts/training/collect_fused_low_teacher_dataset.py
+  scripts/training/collect_fused_low_dagger_dataset.py
+  scripts/training/inspect_fused_low_dataset.py
+  scripts/training/train_fused_low_bc.py
+  scripts/training/fused_low_bc_policy_server.py
+  scripts/training/evaluate_fused_low_bc.py
+  scripts/training/evaluate_teb_planar_bc.py
+  scripts/training/evaluate_rule_based_planar_avoidance.py
+  scripts/training/evaluate_rule_based_planar_base.py
+  scripts/training/evaluate_fused_low_teacher.py
+  scripts/training/evaluate_fused_box_detour_teacher.py
+  scripts/training/evaluate_fused_box_detour_bc.py
+  scripts/training/fused_low_env_server.py
+  scripts/training/fused_low_env_client.py
+  scripts/training/train_fused_low_teacher_ppo.py
+  scripts/training/fused_low_residual_env_server.py
+  scripts/training/fused_low_residual_policy_server.py
+  scripts/training/train_fused_low_residual_ppo.py
+  scripts/training/evaluate_fused_low_residual.py
+  scripts/training/fused_high_env_server.py
+  scripts/training/train_fused_basic_high_ppo.py
+  scripts/training/train_fused_high_ppo.py
+  scripts/training/evaluate_fused_basic_high.py
+  scripts/training/evaluate_fused_high.py
+  scripts/training/select_fused_low_residual_checkpoint.py
+  scripts/training/probe_fused_reach_teacher.py
+  scripts/training/hrl4in_low_env_server.py
+  scripts/training/hrl4in_low_policy_server.py
+  scripts/training/teb_bc_policy_server.py
+  scripts/training/teb_planar_ppo_env_server.py
+  scripts/training/planar_dwa_env_server.py
+  scripts/training/planar_direct_env_server.py
+  scripts/training/train_planar_base_ppo.py
+  scripts/training/train_planar_direct_ppo.py
+  scripts/training/train_planar_tracking_bc.py
+  scripts/training/evaluate_planar_base_policy.py
+  scripts/training/evaluate_planar_direct_ppo.py
+  scripts/hrl/eval_high_level.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(DIRECTORY scripts/hrl/
   DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}/hrl
   FILES_MATCHING PATTERN "*.py"
+)
+
+install(DIRECTORY scripts/training/
+  DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}/training
+  FILES_MATCHING PATTERN "*.py"
+)
+
+install(DIRECTORY scripts/navigation/
+  DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}/navigation
+  FILES_MATCHING PATTERN "*.py"
+)
+
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
 )
 
 ## Mark executables for installation
@@ -211,4 +281,18 @@ install(DIRECTORY scripts/hrl/
 # endif()
 
 ## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_hrl_framework.py)
+  catkin_add_nosetests(test/test_laser_scan_sectors.py)
+  catkin_add_nosetests(test/test_planar_obstacle_teacher.py)
+  catkin_add_nosetests(test/test_planar_base_task.py)
+  catkin_add_nosetests(test/test_navigation_contract.py)
+  catkin_add_nosetests(test/test_dwa_planar_teacher.py)
+  catkin_add_nosetests(test/test_planar_subgoal_task.py)
+  catkin_add_nosetests(test/test_rule_based_planar_tracker.py)
+  catkin_add_nosetests(test/test_rule_based_planar_subgoal.py)
+  catkin_add_nosetests(test/test_geometric_planar_navigation.py)
+  catkin_add_nosetests(test/test_fused_low_level.py)
+  catkin_add_nosetests(test/test_high_level_hrl.py)
+  catkin_add_nosetests(test/test_fused_basic_high_ppo.py)
+endif()

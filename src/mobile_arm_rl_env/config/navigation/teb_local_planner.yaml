@@ -1,0 +1,111 @@
+TebLocalPlannerROS:
+  odom_topic: /odom
+  map_frame: base_link
+
+  # Timed-elastic-band discretization.
+  teb_autosize: true
+  dt_ref: 0.30
+  dt_hysteresis: 0.10
+  min_samples: 3
+  max_samples: 500
+  global_plan_overwrite_orientation: true
+  allow_init_with_backwards_motion: true
+  max_global_plan_lookahead_dist: 3.0
+  global_plan_viapoint_sep: 0.20
+  global_plan_prune_distance: 0.40
+  exact_arc_length: false
+  feasibility_check_no_poses: 10
+  publish_feedback: true
+
+  # Verified tracked-base limits.  There is no lateral degree of freedom.
+  max_vel_x: 0.05
+  max_vel_x_backwards: 0.03
+  max_vel_y: 0.0
+  max_vel_theta: 0.125
+  acc_lim_x: 0.20
+  acc_lim_y: 0.0
+  acc_lim_theta: 0.50
+  min_turning_radius: 0.0
+
+  # Reachable goal tolerances for the low-speed virtual-joint base.
+  xy_goal_tolerance: 0.08
+  yaw_goal_tolerance: 0.20
+  free_goal_vel: false
+  complete_global_plan: true
+
+  # Full conservative projection in base_footprint coordinates.  This is the
+  # same polygon used by both costmaps and includes the folded arm projection.
+  footprint_model:
+    type: "polygon"
+    vertices:
+      - [-0.50, -0.22]
+      - [-0.50,  0.22]
+      - [ 0.78,  0.22]
+      - [ 0.78, -0.22]
+
+  # Laser/costmap obstacle handling.
+  min_obstacle_dist: 0.08
+  inflation_dist: 0.20
+  include_costmap_obstacles: true
+  costmap_obstacles_behind_robot_dist: 1.0
+  obstacle_poses_affected: 30
+  dynamic_obstacle_inflation_dist: 0.25
+  include_dynamic_obstacles: false
+  legacy_obstacle_association: false
+  obstacle_association_force_inclusion_factor: 1.5
+  obstacle_association_cutoff_factor: 5.0
+
+  # Optimization weights.  High nonholonomic and obstacle weights prevent the
+  # optimizer from inventing sideways tracked-base motion or grazing the box.
+  no_inner_iterations: 5
+  no_outer_iterations: 4
+  optimization_activate: true
+  optimization_verbose: false
+  penalty_epsilon: 0.02
+  weight_max_vel_x: 2.0
+  weight_max_vel_y: 1000.0
+  weight_max_vel_theta: 2.0
+  weight_acc_lim_x: 2.0
+  weight_acc_lim_y: 1000.0
+  weight_acc_lim_theta: 2.0
+  weight_kinematics_nh: 1000.0
+  weight_kinematics_forward_drive: 5.0
+  weight_kinematics_turning_radius: 1.0
+  weight_optimaltime: 1.0
+  weight_shortest_path: 0.5
+  weight_obstacle: 80.0
+  weight_inflation: 0.20
+  weight_dynamic_obstacle: 10.0
+  weight_dynamic_obstacle_inflation: 0.20
+  weight_viapoint: 5.0
+  weight_adapt_factor: 2.0
+
+  # Maintain and compare distinct left/right homotopy classes rather than
+  # committing immediately to one locally greedy trajectory.
+  enable_homotopy_class_planning: true
+  enable_multithreading: true
+  max_number_classes: 3
+  selection_cost_hysteresis: 1.0
+  selection_prefer_initial_plan: 0.90
+  selection_obst_cost_scale: 100.0
+  selection_alternative_time_cost: false
+  roadmap_graph_no_samples: 20
+  roadmap_graph_area_width: 2.0
+  roadmap_graph_area_length_scale: 1.0
+  h_signature_prescaler: 0.50
+  h_signature_threshold: 0.10
+  obstacle_keypoint_offset: 0.10
+  obstacle_heading_threshold: 0.45
+  viapoints_all_candidates: true
+  visualize_hc_graph: true
+  visualize_with_time_as_z_axis_scale: 0.0
+  delete_detours_backwards: true
+  max_ratio_detours_duration_best_duration: 3.0
+
+  shrink_horizon_backup: true
+  shrink_horizon_min_duration: 10.0
+  oscillation_recovery: true
+  oscillation_v_eps: 0.005
+  oscillation_omega_eps: 0.01
+  oscillation_recovery_min_duration: 8.0
+  oscillation_filter_duration: 8.0

@@ -1,0 +1,50 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="planar_obstacles">
+    <static>true</static>
+
+    <link name="front_box">
+      <pose>0.80 -0.13 1.00 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>0.20 0.35 2.00</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>0.20 0.35 2.00</size></box></geometry>
+        <material><ambient>0.75 0.20 0.15 1</ambient></material>
+      </visual>
+    </link>
+
+    <link name="left_box">
+      <pose>0.00 1.10 1.00 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>0.35 0.20 2.00</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>0.35 0.20 2.00</size></box></geometry>
+        <material><ambient>0.20 0.55 0.80 1</ambient></material>
+      </visual>
+    </link>
+
+    <link name="rear_box">
+      <pose>-0.80 -0.13 1.00 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>0.20 0.35 2.00</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>0.20 0.35 2.00</size></box></geometry>
+        <material><ambient>0.25 0.75 0.30 1</ambient></material>
+      </visual>
+    </link>
+
+    <link name="right_box">
+      <pose>0.00 -1.10 1.00 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>0.35 0.20 2.00</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>0.35 0.20 2.00</size></box></geometry>
+        <material><ambient>0.80 0.65 0.15 1</ambient></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

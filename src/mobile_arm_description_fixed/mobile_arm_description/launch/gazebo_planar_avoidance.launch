@@ -1,0 +1,38 @@
+<launch>
+    <arg name="gui" default="true" />
+    <arg name="paused" default="false" />
+    <arg name="obstacle_x_offset" default="0.0" />
+    <arg name="obstacle_y_offset" default="0.0" />
+    <arg name="disable_obstacle" default="false" />
+    <!--
+      This scene validates the tracked planar base only. The imported arm collision
+      meshes can load the virtual planar chain and force joint2 toward its
+      upper limit even while the hold controller commands the opposite
+      velocity.  Omit those collision meshes here, keep the arm visually at
+      the configured pose with arm_idle_position_hold, and fail the episode
+      immediately if the independent arm-position monitor detects drift.
+      Full mobile-manipulation launches keep arm collisions enabled.
+    -->
+    <arg name="disable_arm_collisions" default="true" />
+    <arg name="enable_arm_contacts" default="false" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_control.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="enable_base_sensors" value="true" />
+        <arg name="simple_chassis_collision" value="true" />
+        <arg name="disable_chassis_gravity" value="true" />
+        <arg name="disable_arm_collisions"
+             value="$(arg disable_arm_collisions)" />
+        <arg name="enable_arm_contacts"
+             value="$(arg enable_arm_contacts)" />
+    </include>
+
+    <group unless="$(arg disable_obstacle)">
+        <node pkg="gazebo_ros"
+              type="spawn_model"
+              name="spawn_planar_avoidance_obstacle"
+              output="screen"
+              args="-sdf -file $(find mobile_arm_description)/models/planar_avoidance_obstacle.sdf -model planar_avoidance_obstacle -x $(arg obstacle_x_offset) -y $(arg obstacle_y_offset)" />
+    </group>
+</launch>

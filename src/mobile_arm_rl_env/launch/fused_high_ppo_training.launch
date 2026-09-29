@@ -1,0 +1,179 @@
+<launch>
+    <!-- Learned four-way options with conditional 6-D subgoals over a frozen low layer. -->
+    <arg name="gui" default="false" />
+    <arg name="paused" default="false" />
+    <arg name="port" default="5565" />
+    <arg name="seed" default="789" />
+    <arg name="max_steps" default="3200" />
+    <arg name="detour_side" default="0.0" />
+    <arg name="obstacle_x_offset" default="0.0" />
+    <arg name="obstacle_y_offset" default="0.0" />
+    <arg name="high_level_interval" default="80" />
+    <arg name="scan_wait_timeout" default="15.0" />
+    <arg name="option_min_low_steps" default="10" />
+    <arg name="option_stall_steps" default="20" />
+    <arg name="option_minimum_progress" default="0.002" />
+    <arg name="option_safety_window" default="10" />
+    <arg name="option_safety_rate_threshold" default="0.80" />
+    <arg name="low_policy_type" default="residual_ppo" />
+    <arg name="low_policy_host" default="127.0.0.1" />
+    <arg name="low_policy_port" default="5573" />
+    <arg name="residual_base_scale" default="0.04" />
+    <arg name="residual_cartesian_scale" default="0.004" />
+    <arg name="reset_pre_brake_time" default="0.40" />
+    <arg name="reset_configuration_repeats" default="2" />
+    <arg name="basic_hierarchy" default="false" />
+    <arg name="high_path_progress_weight" default="10.0" />
+    <arg name="high_ee_progress_weight" default="2.0" />
+    <arg name="high_final_base_progress_weight" default="0.0" />
+    <arg name="high_final_yaw_progress_weight" default="0.0" />
+    <arg name="high_terminal_ee_progress_weight" default="0.0" />
+    <arg name="high_low_step_penalty" default="0.0" />
+    <arg name="high_option_stall_penalty" default="0.0" />
+    <arg name="high_invalid_terminal_penalty" default="0.0" />
+    <arg name="high_timeout_penalty" default="10.0" />
+    <arg name="terminal_option_contract" default="false" />
+    <arg name="terminal_ee_step" default="0.08" />
+    <arg name="terminal_student_blend" default="0.25" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="obstacle_x_offset" value="$(arg obstacle_x_offset)" />
+        <arg name="obstacle_y_offset" value="$(arg obstacle_y_offset)" />
+        <arg name="disable_arm_collisions" value="false" />
+        <arg name="enable_arm_contacts" value="true" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="fused_high_env_server.py"
+          name="fused_high_environment_server"
+          output="screen"
+          required="true">
+        <env name="PYTHONPATH"
+             value="$(find mobile_arm_rl_env)/scripts:$(env PYTHONPATH)" />
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+        <param name="basic_hierarchy" value="$(arg basic_hierarchy)" />
+        <param name="enable_teacher" value="true" />
+        <param name="low_policy_type" value="$(arg low_policy_type)" />
+        <param name="low_policy_host" value="$(arg low_policy_host)" />
+        <param name="low_policy_port" value="$(arg low_policy_port)" />
+        <param name="low_policy_timeout" value="10.0" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="scan_bin_count" value="36" />
+        <param name="scan_output_max" value="10.0" />
+        <!-- Gazebo may pause LaserScan briefly during reset or under load. -->
+        <param name="scan_wait_timeout" value="$(arg scan_wait_timeout)" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="arm_contact_topic" value="/arm_contacts" />
+        <param name="target_frame" value="fused_high_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <rosparam param="reset_base_positions">[0.0, 0.0, 1.5708]</rosparam>
+        <rosparam param="reset_arm_positions">
+            [0.0, -0.30, 0.03, 0.0, 0.03, 0.0]
+        </rosparam>
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="target_min_chassis_clearance" value="0.015" />
+        <param name="success_threshold" value="0.05" />
+        <param name="max_steps" value="$(arg max_steps)" />
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_settle_window" value="0.50" />
+        <param name="reset_drift_tolerance" value="0.002" />
+        <param name="reset_attempts" value="3" />
+        <param name="reset_pre_brake_time" value="$(arg reset_pre_brake_time)" />
+        <param name="reset_configuration_repeats"
+               value="$(arg reset_configuration_repeats)" />
+        <param name="idle_hold_reset_service"
+               value="/arm_idle_position_hold/reset_targets" />
+        <param name="reset_timeout" value="7.0" />
+
+        <rosparam param="box_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="box_size_xy">[0.20, 0.32]</rosparam>
+        <param name="obstacle_model_name" value="planar_avoidance_obstacle" />
+        <param name="enable_obstacle_repositioning" value="true" />
+        <rosparam param="obstacle_geometry_center_xy">[0.85, -0.13]</rosparam>
+        <rosparam param="obstacle_hidden_center_xy">[-100.0, -100.0]</rosparam>
+        <rosparam param="final_base_goal_xy">[1.60, -0.13]</rosparam>
+        <param name="base_half_length" value="0.56" />
+        <param name="base_half_width" value="0.10" />
+        <param name="path_clearance" value="0.15" />
+        <param name="waypoint_tolerance" value="0.10" />
+        <param name="final_base_position_tolerance" value="0.03" />
+        <param name="final_base_yaw_tolerance" value="0.08" />
+        <param name="terminal_pose_enter_position_tolerance" value="0.03" />
+        <param name="terminal_pose_exit_position_tolerance" value="0.06" />
+        <param name="terminal_pose_stable_cycles" value="3" />
+        <param name="arm_finish_stall_cycles" value="20" />
+        <param name="arm_finish_joint_reference_gain" value="0.35" />
+        <param name="arm_box_release_margin" value="0.02" />
+        <param name="detour_side" value="$(arg detour_side)" />
+        <param name="enable_student_stall_takeover" value="false" />
+
+        <!-- The rule controller stays nominal; the frozen PPO supplies 5-D residuals. -->
+        <param name="base_linear_action_scale" value="0.25" />
+        <param name="base_yaw_action_scale" value="0.25" />
+        <param name="teacher_base_gain" value="2.5" />
+        <param name="teacher_yaw_gain" value="1.5" />
+        <param name="teacher_arm_gain" value="1.0" />
+        <param name="teacher_arm_start_distance" value="0.30" />
+        <param name="teacher_base_stop_distance" value="0.04" />
+        <param name="teacher_subgoal_base_stop_distance" value="0.02" />
+        <param name="teacher_heading_slow_angle" value="0.70" />
+        <param name="teacher_max_cartesian_speed" value="0.05" />
+        <param name="teacher_dls_damping" value="0.03" />
+        <param name="teacher_joint_limit_avoidance_gain" value="0.35" />
+        <param name="teacher_joint_limit_avoidance_activation" value="1.5" />
+        <param name="residual_base_scale" value="$(arg residual_base_scale)" />
+        <param name="residual_cartesian_scale" value="$(arg residual_cartesian_scale)" />
+
+        <param name="high_level_interval" value="$(arg high_level_interval)" />
+        <param name="option_min_low_steps" value="$(arg option_min_low_steps)" />
+        <param name="option_stall_steps" value="$(arg option_stall_steps)" />
+        <param name="option_minimum_progress" value="$(arg option_minimum_progress)" />
+        <param name="option_safety_window" value="$(arg option_safety_window)" />
+        <param name="option_safety_rate_threshold" value="$(arg option_safety_rate_threshold)" />
+        <param name="base_subgoal_tolerance" value="0.04" />
+        <param name="yaw_subgoal_tolerance" value="0.08" />
+        <param name="ee_subgoal_tolerance" value="0.05" />
+        <param name="subgoal_stable_cycles" value="3" />
+        <param name="terminal_option_contract"
+               value="$(arg terminal_option_contract)" />
+        <param name="terminal_ee_step" value="$(arg terminal_ee_step)" />
+        <param name="terminal_student_blend"
+               value="$(arg terminal_student_blend)" />
+        <param name="high_teacher_base_step" value="0.30" />
+        <param name="high_teacher_ee_step" value="0.08" />
+
+        <!-- Potential shaping credits obstacle-route progress as well as EE progress. -->
+        <param name="high_path_progress_weight"
+               value="$(arg high_path_progress_weight)" />
+        <param name="high_ee_progress_weight"
+               value="$(arg high_ee_progress_weight)" />
+        <param name="high_final_base_progress_weight"
+               value="$(arg high_final_base_progress_weight)" />
+        <param name="high_final_yaw_progress_weight"
+               value="$(arg high_final_yaw_progress_weight)" />
+        <param name="high_terminal_ee_progress_weight"
+               value="$(arg high_terminal_ee_progress_weight)" />
+        <param name="high_low_step_penalty"
+               value="$(arg high_low_step_penalty)" />
+        <param name="high_option_stall_penalty"
+               value="$(arg high_option_stall_penalty)" />
+        <param name="high_invalid_terminal_penalty"
+               value="$(arg high_invalid_terminal_penalty)" />
+        <param name="high_success_reward" value="100.0" />
+        <param name="high_collision_penalty" value="100.0" />
+        <param name="high_timeout_penalty"
+               value="$(arg high_timeout_penalty)" />
+        <param name="high_subgoal_failure_penalty" value="5.0" />
+        <param name="high_minimum_subgoal_progress" value="0.01" />
+    </node>
+</launch>

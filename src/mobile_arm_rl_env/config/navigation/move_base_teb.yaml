@@ -1,0 +1,26 @@
+base_global_planner: "global_planner/GlobalPlanner"
+base_local_planner: "teb_local_planner/TebLocalPlannerROS"
+
+planner_frequency: 1.0
+planner_patience: 8.0
+controller_frequency: 10.0
+controller_patience: 8.0
+shutdown_costmaps: false
+
+# A valid in-place turn is slow at 0.125 rad/s.  Do not let move_base's
+# displacement-only watchdog abort it.
+oscillation_timeout: 0.0
+oscillation_distance: 0.08
+
+# TEB owns all recovery motion.  No additional blind rotate/clear behavior is
+# allowed to bypass its footprint and kinematic checks.
+recovery_behavior_enabled: false
+clearing_rotation_allowed: false
+
+GlobalPlanner:
+  allow_unknown: true
+  use_dijkstra: true
+  use_quadratic: true
+  use_grid_path: false
+  old_navfn_behavior: false
+  orientation_mode: 1

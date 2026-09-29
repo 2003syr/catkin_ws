@@ -1,0 +1,74 @@
+<launch>
+    <!--
+      DWA observes the learner-controlled robot and publishes teacher actions,
+      but it is not connected directly to the x/y/yaw controllers.
+    -->
+    <arg name="gui" default="false" />
+    <arg name="port" default="5557" />
+    <arg name="seed" default="123" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="disable_arm_collisions" value="true" />
+    </include>
+
+    <include file="$(find mobile_arm_rl_env)/launch/planar_base_dwa_navigation.launch">
+        <arg name="cmd_vel_topic" value="/dwa_teacher_cmd_vel" />
+        <arg name="enable_cmd_vel_bridge" value="false" />
+    </include>
+
+    <node pkg="mobile_arm_rl_env"
+          type="planar_dwa_env_server.py"
+          name="planar_dwa_environment_server"
+          output="screen"
+          required="true">
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+        <param name="seed" value="$(arg seed)" />
+
+        <param name="enable_planar_base" value="true" />
+        <param name="require_scan" value="true" />
+        <param name="scan_topic" value="/scan" />
+        <param name="contact_topic" value="/base_contacts" />
+        <param name="target_frame" value="planar_training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+
+        <!-- action=1 corresponds to the verified DWA limits 0.05/0.125. -->
+        <param name="base_action_scale" value="0.25" />
+        <param name="teacher_cmd_vel_topic"
+               value="/dwa_teacher_cmd_vel" />
+        <param name="teacher_command_timeout" value="0.50" />
+        <param name="teacher_wait_timeout" value="0.30" />
+        <param name="move_base_server_timeout" value="30.0" />
+        <param name="navigation_global_frame" value="base_link" />
+
+        <!-- Mix obstacle-crossing goals with unobstructed approach goals. -->
+        <rosparam param="training_targets">
+          [[1.65, -0.13], [1.65, 0.10], [1.65, -0.40],
+           [0.00, 1.20], [-1.10, -0.50]]
+        </rosparam>
+        <param name="target_min_distance" value="0.40" />
+        <param name="target_max_distance" value="1.79" />
+        <rosparam param="target_exclusion_circles">
+          [0.85, -0.13, 0.72]
+        </rosparam>
+        <param name="target_sample_attempts" value="200" />
+
+        <!-- Match the verified DWA goal tolerance. -->
+        <param name="base_success_threshold" value="0.08" />
+        <param name="max_steps" value="1800" />
+        <param name="reset_position_tolerance" value="0.01" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="7.0" />
+
+        <param name="progress_reward_scale" value="10.0" />
+        <param name="success_reward" value="2.0" />
+        <param name="collision_penalty" value="2.0" />
+        <param name="time_penalty" value="0.01" />
+        <param name="action_penalty_scale" value="0.01" />
+        <param name="smoothness_penalty_scale" value="0.02" />
+        <param name="collision_distance" value="0.18" />
+        <param name="scan_clip" value="10.0" />
+    </node>
+</launch>
+

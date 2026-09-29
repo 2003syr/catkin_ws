@@ -2,22 +2,6 @@ joint_state_controller:
   type: joint_state_controller/JointStateController
   publish_rate: 50
 
-x_velocity_controller:
-  type: velocity_controllers/JointVelocityController
-  joint: x
-
-y_velocity_controller:
-  type: velocity_controllers/JointVelocityController
-  joint: y
-
-z_velocity_controller:
-  type: velocity_controllers/JointVelocityController
-  joint: z
-
-sway_velocity_controller:
-  type: velocity_controllers/JointVelocityController
-  joint: sway
-
 joint1_velocity_controller:
   type: velocity_controllers/JointVelocityController
   joint: joint1

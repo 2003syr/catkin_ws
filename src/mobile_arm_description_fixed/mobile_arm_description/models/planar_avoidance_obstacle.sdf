@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="planar_avoidance_obstacle">
+    <static>true</static>
+    <!--
+      The box blocks the straight path to the positive-x evaluation targets,
+      while leaving enough space on both sides for the fixed-orientation
+      chassis to demonstrate a genuine detour.
+    -->
+    <link name="blocking_box">
+      <pose>0.85 -0.13 1.00 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>0.20 0.32 2.00</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>0.20 0.32 2.00</size></box></geometry>
+        <material>
+          <ambient>0.90 0.25 0.10 1</ambient>
+          <diffuse>0.90 0.25 0.10 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

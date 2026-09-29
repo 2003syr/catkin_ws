@@ -1,0 +1,47 @@
+<launch>
+    <!-- Start gazebo_control.launch separately before this server. -->
+    <arg name="port" default="5555" />
+    <arg name="time_scale" default="30" />
+    <arg name="enable_teacher" default="true" />
+
+    <param name="/use_sim_time" value="true" />
+
+    <node pkg="mobile_arm_rl_env"
+          type="hrl4in_low_env_server.py"
+          name="hrl4in_low_environment_server"
+          output="screen">
+        <!-- Python-3 trainer connects to this local TCP endpoint. -->
+        <param name="host" value="127.0.0.1" />
+        <param name="port" value="$(arg port)" />
+
+        <!-- At 10 Hz, 30 steps give the arm about three seconds per subgoal. -->
+        <param name="time_scale" value="$(arg time_scale)" />
+        <param name="max_position_subgoal" value="0.08" />
+        <rosparam param="subgoal_tolerance">
+            [0.02, 0.02, 0.05, 0.01, 0.01, 0.01]
+        </rosparam>
+
+        <!-- HRL4IN low-level reward components. -->
+        <param name="intrinsic_reward_scale" value="30.0" />
+        <param name="subgoal_achieved_reward" value="1.0" />
+        <param name="collision_reward_weight" value="0.1" />
+        <param name="extrinsic_reward_weight" value="0.0" />
+
+        <!-- DLS is an auxiliary teacher only; learner actions drive Gazebo. -->
+        <param name="enable_teacher" value="$(arg enable_teacher)" />
+        <param name="teacher_arm_cartesian_gain" value="1.0" />
+        <param name="teacher_max_cartesian_speed" value="0.05" />
+        <param name="teacher_dls_damping" value="0.03" />
+
+        <!-- Existing low-level reach reset and target sampling parameters. -->
+        <param name="target_frame" value="training_target_frame" />
+        <param name="model_name" value="mobile_arm" />
+        <param name="target_min_distance" value="0.08" />
+        <param name="target_max_distance" value="0.25" />
+        <param name="target_min_z" value="0.10" />
+        <param name="target_max_z" value="1.20" />
+        <param name="reset_position_tolerance" value="0.02" />
+        <param name="reset_velocity_tolerance" value="0.02" />
+        <param name="reset_timeout" value="5.0" />
+    </node>
+</launch>

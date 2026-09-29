@@ -1,0 +1,54 @@
+<launch>
+    <arg name="gui" default="true" />
+    <arg name="paused" default="false" />
+    <arg name="disable_arm_gravity" default="true" />
+    <!--
+      The x/y/yaw joints store the kinematic planar pose.  The policy-facing
+      adapter enforces tracked-base [v, omega] motion. Gravity on the
+      14 kg CAD chassis only loads the virtual constraint and can excite the
+      ground contact; collision checking remains enabled with gravity off.
+    -->
+    <arg name="disable_chassis_gravity" default="true" />
+    <arg name="simple_chassis_collision" default="true" />
+    <arg name="enable_base_sensors" default="true" />
+    <arg name="frictionless_planar_contacts" default="true" />
+    <!-- Keep the real arm collision geometry during planar motion. -->
+    <arg name="disable_arm_collisions" default="false" />
+    <arg name="enable_arm_contacts" default="false" />
+    <!-- Same clearance-verified pose used by the fixed-base launch. -->
+    <arg name="initial_joint1" default="0.0" />
+    <arg name="initial_joint2" default="-0.30" />
+    <arg name="initial_joint3" default="0.03" />
+    <arg name="initial_joint4" default="0.0" />
+    <arg name="initial_joint5" default="0.03" />
+    <arg name="initial_joint6" default="0.0" />
+    <arg name="initial_planar_yaw" default="1.5708" />
+
+    <include file="$(find mobile_arm_description)/launch/gazebo_control.launch">
+        <arg name="fixed_base_diagnostic" value="false" />
+        <arg name="gui" value="$(arg gui)" />
+        <arg name="paused" value="$(arg paused)" />
+        <arg name="disable_arm_gravity"
+             value="$(arg disable_arm_gravity)" />
+        <arg name="disable_chassis_gravity"
+             value="$(arg disable_chassis_gravity)" />
+        <arg name="simple_chassis_collision"
+             value="$(arg simple_chassis_collision)" />
+        <arg name="enable_base_sensors"
+             value="$(arg enable_base_sensors)" />
+        <arg name="frictionless_planar_contacts"
+             value="$(arg frictionless_planar_contacts)" />
+        <arg name="disable_arm_collisions"
+             value="$(arg disable_arm_collisions)" />
+        <arg name="enable_arm_contacts"
+             value="$(arg enable_arm_contacts)" />
+        <arg name="verify_controllers" value="true" />
+        <arg name="initial_joint1" value="$(arg initial_joint1)" />
+        <arg name="initial_joint2" value="$(arg initial_joint2)" />
+        <arg name="initial_joint3" value="$(arg initial_joint3)" />
+        <arg name="initial_joint4" value="$(arg initial_joint4)" />
+        <arg name="initial_joint5" value="$(arg initial_joint5)" />
+        <arg name="initial_joint6" value="$(arg initial_joint6)" />
+        <arg name="initial_planar_yaw" value="$(arg initial_planar_yaw)" />
+    </include>
+</launch>
