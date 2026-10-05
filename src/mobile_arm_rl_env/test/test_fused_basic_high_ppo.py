@@ -29,9 +29,11 @@ from training.train_fused_basic_high_ppo import (
     _collect_dagger_dataset,
     _dagger_intervention_required,
     _dagger_teacher_probability,
+    _discount_reference_low_steps,
     _explained_variance,
     _initialize_ppo_from_checkpoint,
     _load_dagger_dataset,
+    _low_step_gamma,
     _mean_abs,
     _normalize_ppo_advantages,
     _parameter_gradient_norm,
@@ -256,6 +258,130 @@ class FusedBasicHighPpoTest(unittest.TestCase):
         parameter.grad = torch.tensor([3.0, 4.0])
         self.assertAlmostEqual(
             _parameter_gradient_norm([parameter]), 5.0, places=6
+        )
+
+    def test_rollout_smdp_uses_option_duration_for_td_and_gae(self):
+        buffer = PPORolloutBuffer(
+            capacity=2, observation_dim=1, action_dim=1
+        )
+        for value, reward, done, duration in (
+                (1.0, 3.0, False, 2.0),
+                (2.0, 4.0, True, 3.0)):
+            buffer.add(
+                observation=np.zeros(1, dtype=np.float32),
+                action=np.zeros(1, dtype=np.float32),
+                teacher_action=np.zeros(1, dtype=np.float32),
+                teacher_valid=False,
+                log_probability=0.0,
+                value=value,
+                reward=reward,
+                done=done,
+                duration=duration,
+            )
+        buffer.compute_returns_and_advantages(
+            last_value=9.0,
+            gamma=0.9,
+            gae_lambda=0.95,
+            duration_discount_reference=1.0,
+        )
+
+        expected_last_advantage = 4.0 - 2.0
+        expected_first_delta = 3.0 + (0.9 ** 2.0) * 2.0 - 1.0
+        expected_first_advantage = (
+            expected_first_delta
+            + (0.9 ** 2.0) * 0.95 * expected_last_advantage
+        )
+        self.assertAlmostEqual(
+            float(buffer.transition_discounts[0]), 0.9 ** 2.0, places=6
+        )
+        self.assertAlmostEqual(
+            float(buffer.transition_discounts[1]), 0.9 ** 3.0, places=6
+        )
+        self.assertAlmostEqual(
+            float(buffer.advantages[0]), expected_first_advantage, places=6
+        )
+        self.assertAlmostEqual(float(buffer.advantages[1]), 2.0, places=6)
+        self.assertAlmostEqual(
+            float(buffer.returns[0]), expected_first_advantage + 1.0,
+            places=6,
+        )
+
+    def test_rollout_high_step_mode_remains_backward_compatible(self):
+        buffer = PPORolloutBuffer(
+            capacity=1, observation_dim=1, action_dim=1
+        )
+        buffer.add(
+            observation=np.zeros(1, dtype=np.float32),
+            action=np.zeros(1, dtype=np.float32),
+            teacher_action=np.zeros(1, dtype=np.float32),
+            teacher_valid=False,
+            log_probability=0.0,
+            value=1.0,
+            reward=3.0,
+            done=False,
+            duration=40.0,
+        )
+        buffer.compute_returns_and_advantages(
+            last_value=2.0,
+            gamma=0.9,
+            gae_lambda=0.95,
+        )
+        self.assertAlmostEqual(
+            float(buffer.transition_discounts[0]), 0.9, places=6
+        )
+        self.assertAlmostEqual(float(buffer.returns[0]), 4.8, places=6)
+
+    def test_rollout_smdp_reference_preserves_nominal_gamma(self):
+        buffer = PPORolloutBuffer(
+            capacity=1, observation_dim=1, action_dim=1
+        )
+        buffer.add(
+            observation=np.zeros(1, dtype=np.float32),
+            action=np.zeros(1, dtype=np.float32),
+            teacher_action=np.zeros(1, dtype=np.float32),
+            teacher_valid=False,
+            log_probability=0.0,
+            value=0.0,
+            reward=0.0,
+            done=False,
+            duration=80.0,
+        )
+        buffer.compute_returns_and_advantages(
+            last_value=1.0,
+            gamma=0.99,
+            gae_lambda=0.95,
+            duration_discount_reference=80.0,
+        )
+        self.assertAlmostEqual(
+            float(buffer.transition_discounts[0]), 0.99, places=6
+        )
+        tensors = buffer.tensors(torch.device("cpu"))
+        self.assertAlmostEqual(float(tensors["durations"][0]), 80.0)
+        self.assertAlmostEqual(
+            float(tensors["transition_discounts"][0]), 0.99, places=6
+        )
+
+    def test_smdp_reference_defaults_to_environment_interval(self):
+        args = SimpleNamespace(
+            discount_mode="smdp",
+            smdp_discount_reference_low_steps=0.0,
+        )
+        reference = _discount_reference_low_steps(
+            args, {"high_level_interval": 80}
+        )
+        self.assertEqual(reference, 80.0)
+        self.assertAlmostEqual(
+            _low_step_gamma(0.99, "smdp", reference) ** reference,
+            0.99,
+            places=6,
+        )
+
+        args.smdp_discount_reference_low_steps = 40.0
+        self.assertEqual(
+            _discount_reference_low_steps(
+                args, {"high_level_interval": 80}
+            ),
+            40.0,
         )
 
     def test_actor_kl_stop_does_not_cancel_critic_epochs(self):

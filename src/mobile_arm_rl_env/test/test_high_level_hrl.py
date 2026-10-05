@@ -458,7 +458,18 @@ class HighLevelHrlTest(unittest.TestCase):
             info["terminal_ee_requested_norm"], 0.1, places=6
         )
         self.assertGreater(info["terminal_ee_executed_norm"], 0.0)
+        self.assertLess(
+            info["terminal_ee_student_alignment_cosine"], 0.0
+        )
+        self.assertGreater(
+            info["terminal_ee_executed_alignment_cosine"], 0.0
+        )
         self.assertGreater(info["terminal_ee_alignment_cosine"], 0.0)
+        self.assertAlmostEqual(
+            info["terminal_ee_alignment_cosine"],
+            info["terminal_ee_executed_alignment_cosine"],
+            places=7,
+        )
         self.assertGreater(info["terminal_ee_projection"], 0.0)
         self.assertAlmostEqual(
             info["terminal_ee_projection"],

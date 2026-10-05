@@ -165,9 +165,11 @@ def main():
     total_low_steps = 0
     update_index = 0
     reference_model = None
+    source_discount_mode = None
     reference_kl_coefficient = float(args.reference_kl_coefficient)
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
+        source_discount_mode = _checkpoint_discount_mode(checkpoint)
         _validate_checkpoint(checkpoint, model)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -203,6 +205,7 @@ def main():
         checkpoint = torch.load(
             args.ppo_initial_checkpoint, map_location=device
         )
+        source_discount_mode = _checkpoint_discount_mode(checkpoint)
         _initialize_ppo_from_checkpoint(
             checkpoint, model, normalizer
         )
@@ -222,6 +225,28 @@ def main():
 
     client = FusedBasicHighEnvironmentClient(
         host=args.host, port=args.port, timeout=args.socket_timeout
+    )
+    discount_reference_low_steps = _discount_reference_low_steps(
+        args, client.metadata
+    )
+    low_step_gamma = _low_step_gamma(
+        args.gamma,
+        args.discount_mode,
+        discount_reference_low_steps,
+    )
+    print(
+        "basic_high_discount_contract mode={} option_reward={} "
+        "gamma_per_reference={:.8f} reference_low_steps={:.3f} "
+        "low_step_gamma={:.10f} gae_lambda_per_option={:.6f} "
+        "duration_source=info.low_steps source_checkpoint_mode={}".format(
+            args.discount_mode,
+            "environment_aggregate_option_reward",
+            args.gamma,
+            discount_reference_low_steps,
+            low_step_gamma,
+            args.gae_lambda,
+            source_discount_mode,
+        )
     )
     active_terminal_blend = _active_terminal_blend(
         terminal_blend_curriculum
@@ -280,8 +305,11 @@ def main():
     rollout_safety_projection_max = 0.0
     rollout_terminal_projection_sum = 0.0
     rollout_terminal_projection_max = 0.0
+    rollout_terminal_student_alignment_sum = 0.0
+    rollout_terminal_student_alignment_count = 0
     rollout_terminal_alignment_sum = 0.0
     rollout_terminal_alignment_count = 0
+    rollout_terminal_pose_stage_counts = collections.Counter()
     reward_window = []
     start_time = time.time()
     best_gate = None
@@ -618,8 +646,11 @@ def main():
         episode_terminal_steps = 0
         episode_terminal_projection_sum = 0.0
         episode_terminal_projection_max = 0.0
+        episode_terminal_student_alignment_sum = 0.0
+        episode_terminal_student_alignment_count = 0
         episode_terminal_alignment_sum = 0.0
         episode_terminal_alignment_count = 0
+        episode_terminal_pose_stage_counts = collections.Counter()
         episode_terminal_forced = 0
         episode_terminal_fallbacks = 0
         episode_terminal_norm_clips = 0
@@ -642,6 +673,12 @@ def main():
             next_observation, reward, done, info = client.step(
                 action, subgoal_type=stage
             )
+            option_low_steps = int(info.get("low_steps", 0))
+            if option_low_steps <= 0:
+                raise RuntimeError(
+                    "high environment returned invalid option duration: "
+                    "low_steps={}".format(option_low_steps)
+                )
             buffer.add(
                 observation=normalized,
                 action=action,
@@ -651,6 +688,7 @@ def main():
                 value=float(value_tensor.item()),
                 reward=reward,
                 done=done,
+                duration=option_low_steps,
             )
             rollout_stages.append(stage)
             rollout_teacher_stages.append(teacher_stage)
@@ -664,7 +702,6 @@ def main():
             option_termination = str(info.get(
                 "option_termination", "unknown"
             ))
-            option_low_steps = int(info.get("low_steps", 0))
             option_progress = float(info.get("option_progress", 0.0))
             option_safety_steps = int(info.get("safety_steps", 0))
             option_overlap_steps = int(info.get("overlap_steps", 0))
@@ -757,13 +794,35 @@ def main():
                 rollout_terminal_projection_max, terminal_projection
             )
             if executed_stage == TERMINAL_STAGE:
-                terminal_alignment = float(info.get(
-                    "terminal_ee_alignment_cosine", 0.0
+                terminal_pose_stage = str(info.get(
+                    "terminal_pose_stage", "UNKNOWN"
                 ))
-                if np.isfinite(terminal_alignment):
-                    rollout_terminal_alignment_sum += terminal_alignment
+                rollout_terminal_pose_stage_counts[
+                    terminal_pose_stage
+                ] += 1
+                episode_terminal_pose_stage_counts[
+                    terminal_pose_stage
+                ] += 1
+                student_alignment = float(info.get(
+                    "terminal_ee_student_alignment_cosine", 0.0
+                ))
+                executed_alignment = float(info.get(
+                    "terminal_ee_executed_alignment_cosine",
+                    info.get("terminal_ee_alignment_cosine", 0.0),
+                ))
+                if np.isfinite(student_alignment):
+                    rollout_terminal_student_alignment_sum += (
+                        student_alignment
+                    )
+                    rollout_terminal_student_alignment_count += 1
+                    episode_terminal_student_alignment_sum += (
+                        student_alignment
+                    )
+                    episode_terminal_student_alignment_count += 1
+                if np.isfinite(executed_alignment):
+                    rollout_terminal_alignment_sum += executed_alignment
                     rollout_terminal_alignment_count += 1
-                    episode_terminal_alignment_sum += terminal_alignment
+                    episode_terminal_alignment_sum += executed_alignment
                     episode_terminal_alignment_count += 1
             reward_terms = info.get("high_reward", {}).get("terms", {})
             for term_name in (
@@ -851,7 +910,10 @@ def main():
                     "invalid_terminal={} terminal_fallbacks={} "
                     "terminal_norm_clips={} terminal_projection_mean={:.6f} "
                     "terminal_projection_max={:.6f} "
-                    "terminal_alignment_mean={:.6f} reward_terms={}".format(
+                    "terminal_pose_stages={} "
+                    "terminal_student_alignment_mean={:.6f} "
+                    "terminal_executed_alignment_mean={:.6f} "
+                    "reward_terms={}".format(
                         training_episode_index,
                         scenario.get("scenario_id"),
                         category,
@@ -907,6 +969,10 @@ def main():
                             episode_terminal_steps, 1
                         )),
                         episode_terminal_projection_max,
+                        dict(episode_terminal_pose_stage_counts),
+                        episode_terminal_student_alignment_sum / float(max(
+                            episode_terminal_student_alignment_count, 1
+                        )),
                         episode_terminal_alignment_sum / float(max(
                             episode_terminal_alignment_count, 1
                         )),
@@ -934,8 +1000,11 @@ def main():
                 episode_terminal_steps = 0
                 episode_terminal_projection_sum = 0.0
                 episode_terminal_projection_max = 0.0
+                episode_terminal_student_alignment_sum = 0.0
+                episode_terminal_student_alignment_count = 0
                 episode_terminal_alignment_sum = 0.0
                 episode_terminal_alignment_count = 0
+                episode_terminal_pose_stage_counts.clear()
                 episode_terminal_forced = 0
                 episode_terminal_fallbacks = 0
                 episode_terminal_norm_clips = 0
@@ -960,8 +1029,20 @@ def main():
                 last_value,
                 gamma=args.gamma,
                 gae_lambda=args.gae_lambda,
+                duration_discount_reference=(
+                    discount_reference_low_steps
+                    if args.discount_mode == "smdp"
+                    else None
+                ),
             )
             rollout_size = buffer.size
+            discount_diagnostics = _rollout_discount_diagnostics(
+                buffer,
+                args.discount_mode,
+                args.gamma,
+                args.gae_lambda,
+                discount_reference_low_steps,
+            )
             reference_kl_coefficient_used = float(
                 reference_kl_coefficient
             )
@@ -1081,12 +1162,25 @@ def main():
             }
             terminal_diagnostics = dict(terminal_contract_counts)
             terminal_diagnostics.update({
+                "pose_stage_counts": dict(
+                    rollout_terminal_pose_stage_counts
+                ),
                 "projection_mean": (
                     rollout_terminal_projection_sum / float(max(
                         terminal_contract_counts.get("executed", 0), 1
                     ))
                 ),
                 "projection_max": float(rollout_terminal_projection_max),
+                "student_alignment_cosine_mean": (
+                    rollout_terminal_student_alignment_sum / float(max(
+                        rollout_terminal_student_alignment_count, 1
+                    ))
+                ),
+                "executed_alignment_cosine_mean": (
+                    rollout_terminal_alignment_sum / float(max(
+                        rollout_terminal_alignment_count, 1
+                    ))
+                ),
                 "alignment_cosine_mean": (
                     rollout_terminal_alignment_sum / float(max(
                         rollout_terminal_alignment_count, 1
@@ -1182,6 +1276,7 @@ def main():
                 "teacher_kl={:.6f} reference_kl={:.6f} "
                 "reference_kl_coef={:.6f} policy_kl={:.6f} "
                 "kl_early_stop={} entropy={:.5f} action_abs={:.4f} stages={} "
+                "duration_mean={:.2f} transition_discount_mean={:.6f} "
                 "terminal_contract={} reward_terms={} episode_rates={} "
                 "elapsed_s={:.1f}".format(
                     update_index,
@@ -1200,6 +1295,8 @@ def main():
                     metrics["entropy"],
                     metrics["action_abs"],
                     dict(stage_counts),
+                    discount_diagnostics["duration_mean"],
+                    discount_diagnostics["transition_discount_mean"],
                     dict(terminal_contract_counts),
                     mean_reward_terms,
                     _episode_rates(
@@ -1213,11 +1310,12 @@ def main():
             )
             print(
                 "basic_high_update_diagnostics update={} ppo={} option={} "
-                "terminal={}".format(
+                "terminal={} discount={}".format(
                     update_index,
                     ppo_diagnostics,
                     option_diagnostics,
                     terminal_diagnostics,
+                    discount_diagnostics,
                 )
             )
             terminal_contract_counts.clear()
@@ -1242,8 +1340,11 @@ def main():
             rollout_safety_projection_max = 0.0
             rollout_terminal_projection_sum = 0.0
             rollout_terminal_projection_max = 0.0
+            rollout_terminal_student_alignment_sum = 0.0
+            rollout_terminal_student_alignment_count = 0
             rollout_terminal_alignment_sum = 0.0
             rollout_terminal_alignment_count = 0
+            rollout_terminal_pose_stage_counts.clear()
             if (
                     args.checkpoint_interval > 0
                     and update_index % args.checkpoint_interval == 0):
@@ -1500,6 +1601,11 @@ def _evaluate_policy(
     stage_base_projection_sums = collections.Counter()
     stage_ee_projection_sums = collections.Counter()
     safety_reasons = collections.Counter()
+    terminal_pose_stage_counts = collections.Counter()
+    terminal_student_alignment_sum = 0.0
+    terminal_student_alignment_count = 0
+    terminal_executed_alignment_sum = 0.0
+    terminal_executed_alignment_count = 0
     for unused_episode in range(int(episodes)):
         observation, scenario = _reset(client, sampler, default_budget)
         done = False
@@ -1516,6 +1622,11 @@ def _evaluate_policy(
         episode_ee_projection_sum = 0.0
         episode_terminal_steps = 0
         episode_terminal_projection = 0.0
+        episode_terminal_pose_stage_counts = collections.Counter()
+        episode_terminal_student_alignment_sum = 0.0
+        episode_terminal_student_alignment_count = 0
+        episode_terminal_executed_alignment_sum = 0.0
+        episode_terminal_executed_alignment_count = 0
         episode_requested_stages = collections.Counter()
         episode_executed_stages = collections.Counter()
         episode_terminations = collections.Counter()
@@ -1610,6 +1721,37 @@ def _evaluate_policy(
             episode_terminal_projection += float(info.get(
                 "terminal_ee_projection", 0.0
             ))
+            if executed_stage == TERMINAL_STAGE:
+                terminal_pose_stage = str(info.get(
+                    "terminal_pose_stage", "UNKNOWN"
+                ))
+                terminal_pose_stage_counts[terminal_pose_stage] += 1
+                episode_terminal_pose_stage_counts[
+                    terminal_pose_stage
+                ] += 1
+                student_alignment = _info_float(
+                    info,
+                    "terminal_ee_student_alignment_cosine",
+                )
+                executed_alignment = _info_float(
+                    info,
+                    "terminal_ee_executed_alignment_cosine",
+                    _info_float(info, "terminal_ee_alignment_cosine"),
+                )
+                if np.isfinite(student_alignment):
+                    terminal_student_alignment_sum += student_alignment
+                    terminal_student_alignment_count += 1
+                    episode_terminal_student_alignment_sum += (
+                        student_alignment
+                    )
+                    episode_terminal_student_alignment_count += 1
+                if np.isfinite(executed_alignment):
+                    terminal_executed_alignment_sum += executed_alignment
+                    terminal_executed_alignment_count += 1
+                    episode_terminal_executed_alignment_sum += (
+                        executed_alignment
+                    )
+                    episode_terminal_executed_alignment_count += 1
             for reason, count in info.get("safety_reasons", {}).items():
                 safety_reasons[str(reason)] += int(count)
         counts["episodes"] += 1
@@ -1645,7 +1787,9 @@ def _evaluate_policy(
             "safety_projection_max={:.6f} "
             "base_command_projection_mean={:.6f} "
             "ee_command_projection_mean={:.6f} terminal_steps={} "
-            "terminal_projection_mean={:.5f}".format(
+            "terminal_projection_mean={:.5f} terminal_pose_stages={} "
+            "terminal_student_alignment_mean={:.5f} "
+            "terminal_executed_alignment_mean={:.5f}".format(
                 counts["episodes"],
                 "teacher" if model is None else "student",
                 scenario.get("scenario_id"),
@@ -1694,6 +1838,13 @@ def _evaluate_policy(
                 episode_terminal_steps,
                 episode_terminal_projection / float(max(
                     episode_terminal_steps, 1
+                )),
+                dict(episode_terminal_pose_stage_counts),
+                episode_terminal_student_alignment_sum / float(max(
+                    episode_terminal_student_alignment_count, 1
+                )),
+                episode_terminal_executed_alignment_sum / float(max(
+                    episode_terminal_executed_alignment_count, 1
                 )),
             )
         )
@@ -1750,6 +1901,18 @@ def _evaluate_policy(
         "terminal_steps": int(counts["terminal_steps"]),
         "terminal_projection_mean": float(counts["terminal_projection"])
         / float(max(counts["terminal_steps"], 1)),
+        "terminal_pose_stage_counts": dict(terminal_pose_stage_counts),
+        "terminal_student_alignment_cosine_mean": float(
+            terminal_student_alignment_sum
+        ) / float(max(terminal_student_alignment_count, 1)),
+        "terminal_executed_alignment_cosine_mean": float(
+            terminal_executed_alignment_sum
+        ) / float(max(terminal_executed_alignment_count, 1)),
+        # Backward-compatible alias: historical alignment measured the
+        # environment-executed action after projection/blending.
+        "terminal_alignment_cosine_mean": float(
+            terminal_executed_alignment_sum
+        ) / float(max(terminal_executed_alignment_count, 1)),
     }
 
 
@@ -3696,6 +3859,68 @@ def _episode_rates(episodes, successes, collisions, timeouts):
     }
 
 
+def _checkpoint_discount_mode(checkpoint):
+    contract = checkpoint.get("discount_contract", {})
+    if isinstance(contract, dict) and contract.get("mode"):
+        return str(contract["mode"])
+    return "legacy_high_step"
+
+
+def _discount_reference_low_steps(args, environment_metadata):
+    if str(args.discount_mode) != "smdp":
+        return 1.0
+    configured = float(args.smdp_discount_reference_low_steps)
+    if configured > 0.0:
+        return configured
+    reference = float(environment_metadata.get("high_level_interval", 0.0))
+    if not np.isfinite(reference) or reference <= 0.0:
+        raise ValueError(
+            "SMDP discounting requires a positive high_level_interval "
+            "or --smdp-discount-reference-low-steps"
+        )
+    return reference
+
+
+def _low_step_gamma(gamma, discount_mode, reference_low_steps):
+    gamma = float(gamma)
+    if str(discount_mode) != "smdp":
+        return gamma
+    return gamma ** (1.0 / float(reference_low_steps))
+
+
+def _rollout_discount_diagnostics(
+        buffer,
+        discount_mode,
+        gamma,
+        gae_lambda,
+        reference_low_steps):
+    if buffer.size <= 0:
+        raise RuntimeError("cannot diagnose an empty rollout")
+    active = slice(0, buffer.size)
+    durations = np.asarray(buffer.durations[active], dtype=np.float64)
+    discounts = np.asarray(
+        buffer.transition_discounts[active], dtype=np.float64
+    )
+    return {
+        "mode": str(discount_mode),
+        "option_reward": "environment_aggregate_option_reward",
+        "gamma_per_reference": float(gamma),
+        "reference_low_steps": float(reference_low_steps),
+        "low_step_gamma": float(_low_step_gamma(
+            gamma, discount_mode, reference_low_steps
+        )),
+        "gae_lambda_per_option": float(gae_lambda),
+        "duration_mean": float(np.mean(durations)),
+        "duration_std": float(np.std(durations)),
+        "duration_min": float(np.min(durations)),
+        "duration_max": float(np.max(durations)),
+        "transition_discount_mean": float(np.mean(discounts)),
+        "transition_discount_std": float(np.std(discounts)),
+        "transition_discount_min": float(np.min(discounts)),
+        "transition_discount_max": float(np.max(discounts)),
+    }
+
+
 def _save_checkpoint(
         path,
         model,
@@ -3771,8 +3996,25 @@ def _save_checkpoint(
         ),
         "environment_metadata": dict(environment_metadata),
         "training_contract": (
-            "markov_kl_dagger_two_layer_ppo_terminal_blend_annealing_v7"
+            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v8"
         ),
+        "discount_contract": {
+            "mode": str(getattr(args, "discount_mode", "high_step")),
+            "option_reward": "environment_aggregate_option_reward",
+            "duration_source": "info.low_steps",
+            "gamma_per_reference": float(args.gamma),
+            "reference_low_steps": float(_discount_reference_low_steps(
+                args, environment_metadata
+            )),
+            "low_step_gamma": float(_low_step_gamma(
+                args.gamma,
+                getattr(args, "discount_mode", "high_step"),
+                _discount_reference_low_steps(args, environment_metadata),
+            )),
+            "gae_lambda_per_option": float(args.gae_lambda),
+            "td_rule": "R_option+gamma_low**n*V_next-V",
+            "gae_rule": "delta+gamma_low**n*lambda*next_advantage",
+        },
         "kl_contract": {
             "teacher": "narrow_gaussian_forward_kl_on_student_states",
             "reference": "frozen_bc_forward_kl",
@@ -4074,6 +4316,24 @@ def _parse_arguments():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument(
+        "--discount-mode",
+        choices=("high_step", "smdp"),
+        default="high_step",
+        help=(
+            "high_step applies one gamma per upper-level decision; smdp "
+            "applies gamma^(low_steps/reference_low_steps)"
+        ),
+    )
+    parser.add_argument(
+        "--smdp-discount-reference-low-steps",
+        type=float,
+        default=0.0,
+        help=(
+            "number of low-level steps represented by --gamma in SMDP "
+            "mode; 0 uses environment high_level_interval"
+        ),
+    )
     parser.add_argument("--clip-ratio", type=float, default=0.20)
     parser.add_argument("--value-coefficient", type=float, default=0.50)
     parser.add_argument("--entropy-coefficient", type=float, default=0.001)
@@ -4197,6 +4457,14 @@ def _parse_arguments():
         parser.error("--checkpoint-interval must be non-negative")
     if args.batch_size <= 0 or args.ppo_epochs <= 0:
         parser.error("batch size and PPO epochs must be positive")
+    if not 0.0 < args.gamma <= 1.0:
+        parser.error("--gamma must be in (0, 1]")
+    if not 0.0 <= args.gae_lambda <= 1.0:
+        parser.error("--gae-lambda must be in [0, 1]")
+    if args.smdp_discount_reference_low_steps < 0.0:
+        parser.error(
+            "--smdp-discount-reference-low-steps must be non-negative"
+        )
     if (
             args.teacher_episodes <= 0
             or args.teacher_max_attempts < args.teacher_episodes

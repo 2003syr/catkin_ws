@@ -501,6 +501,17 @@ class HighLevelEnv(object):
             "terminal_ee_alignment_cosine": float(terminal_guard.get(
                 "ee_alignment_cosine", 0.0
             )),
+            "terminal_ee_student_alignment_cosine": float(
+                terminal_guard.get(
+                    "ee_student_alignment_cosine", 0.0
+                )
+            ),
+            "terminal_ee_executed_alignment_cosine": float(
+                terminal_guard.get(
+                    "ee_executed_alignment_cosine",
+                    terminal_guard.get("ee_alignment_cosine", 0.0),
+                )
+            ),
             "terminal_ee_norm_clipped": bool(terminal_guard.get(
                 "ee_norm_clipped", False
             )),
@@ -780,6 +791,8 @@ class HighLevelEnv(object):
                 "invalid_terminal": invalid_terminal,
                 "stage_forced": stage_forced,
                 "ee_projection": 0.0,
+                "ee_student_alignment_cosine": 0.0,
+                "ee_executed_alignment_cosine": 0.0,
             }
             return False
 
@@ -787,6 +800,8 @@ class HighLevelEnv(object):
         ee_diagnostics = {
             "requested_norm": 0.0,
             "executed_norm": 0.0,
+            "student_alignment_cosine": 0.0,
+            "executed_alignment_cosine": 0.0,
             "alignment_cosine": 0.0,
             "norm_clipped": False,
             "progress_fallback": False,
@@ -838,6 +853,12 @@ class HighLevelEnv(object):
             ),
             "ee_alignment_cosine": float(
                 ee_diagnostics["alignment_cosine"]
+            ),
+            "ee_student_alignment_cosine": float(
+                ee_diagnostics["student_alignment_cosine"]
+            ),
+            "ee_executed_alignment_cosine": float(
+                ee_diagnostics["executed_alignment_cosine"]
             ),
             "ee_norm_clipped": bool(ee_diagnostics["norm_clipped"]),
             "ee_progress_fallback": bool(
@@ -936,16 +957,30 @@ class HighLevelEnv(object):
         requested_norm = float(np.linalg.norm(requested))
         executed_norm = float(np.linalg.norm(executed))
         final_error_norm = float(np.linalg.norm(final_error))
-        denominator = executed_norm * final_error_norm
-        alignment_cosine = (
-            float(np.dot(executed, final_error)) / denominator
-            if denominator > 1.0e-12 else 0.0
+        requested_denominator = requested_norm * final_error_norm
+        student_alignment_cosine = (
+            float(np.dot(requested, final_error))
+            / requested_denominator
+            if requested_denominator > 1.0e-12 else 0.0
+        )
+        executed_denominator = executed_norm * final_error_norm
+        executed_alignment_cosine = (
+            float(np.dot(executed, final_error))
+            / executed_denominator
+            if executed_denominator > 1.0e-12 else 0.0
         )
         return {
             "requested_norm": requested_norm,
             "executed_norm": executed_norm,
+            "student_alignment_cosine": float(np.clip(
+                student_alignment_cosine, -1.0, 1.0
+            )),
+            "executed_alignment_cosine": float(np.clip(
+                executed_alignment_cosine, -1.0, 1.0
+            )),
+            # Compatibility alias retained for existing analysis scripts.
             "alignment_cosine": float(np.clip(
-                alignment_cosine, -1.0, 1.0
+                executed_alignment_cosine, -1.0, 1.0
             )),
             "norm_clipped": bool(norm_clipped),
             "progress_fallback": bool(progress_fallback),

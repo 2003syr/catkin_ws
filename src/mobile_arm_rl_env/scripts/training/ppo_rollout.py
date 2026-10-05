@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Rollout storage and GAE for single-environment low-level PPO."""
+"""Rollout storage and duration-aware GAE for single-environment PPO."""
 
 import numpy as np
 import torch
@@ -42,6 +42,10 @@ class PPORolloutBuffer(object):
         self.values = np.zeros(self.capacity, dtype=np.float32)
         self.rewards = np.zeros(self.capacity, dtype=np.float32)
         self.dones = np.zeros(self.capacity, dtype=np.float32)
+        self.durations = np.ones(self.capacity, dtype=np.float32)
+        self.transition_discounts = np.zeros(
+            self.capacity, dtype=np.float32
+        )
         self.advantages = np.zeros(self.capacity, dtype=np.float32)
         self.returns = np.zeros(self.capacity, dtype=np.float32)
         self.size = 0
@@ -59,9 +63,13 @@ class PPORolloutBuffer(object):
             log_probability,
             value,
             reward,
-            done):
+            done,
+            duration=1.0):
         if self.full:
             raise RuntimeError("rollout buffer is full")
+        duration = float(duration)
+        if not np.isfinite(duration) or duration <= 0.0:
+            raise ValueError("rollout duration must be finite and positive")
         index = self.size
         self.observations[index] = observation
         self.actions[index] = action
@@ -71,28 +79,54 @@ class PPORolloutBuffer(object):
         self.values[index] = float(value)
         self.rewards[index] = float(reward)
         self.dones[index] = float(bool(done))
+        self.durations[index] = duration
         self.size += 1
 
     def compute_returns_and_advantages(
             self,
             last_value,
             gamma=0.99,
-            gae_lambda=0.95):
+            gae_lambda=0.95,
+            duration_discount_reference=None):
         if self.size == 0:
             raise RuntimeError("cannot compute returns for an empty rollout")
+        gamma = float(gamma)
+        gae_lambda = float(gae_lambda)
+        if not 0.0 <= gamma <= 1.0:
+            raise ValueError("gamma must be in [0, 1]")
+        if not 0.0 <= gae_lambda <= 1.0:
+            raise ValueError("gae_lambda must be in [0, 1]")
+        if duration_discount_reference is not None:
+            duration_discount_reference = float(
+                duration_discount_reference
+            )
+            if (
+                    not np.isfinite(duration_discount_reference)
+                    or duration_discount_reference <= 0.0):
+                raise ValueError(
+                    "duration_discount_reference must be finite and positive"
+                )
         last_advantage = 0.0
         next_value = float(last_value)
         for index in reversed(range(self.size)):
             non_terminal = 1.0 - self.dones[index]
+            transition_discount = gamma
+            if duration_discount_reference is not None:
+                duration_units = (
+                    float(self.durations[index])
+                    / duration_discount_reference
+                )
+                transition_discount = gamma ** duration_units
+            self.transition_discounts[index] = transition_discount
             delta = (
                 self.rewards[index]
-                + float(gamma) * next_value * non_terminal
+                + transition_discount * next_value * non_terminal
                 - self.values[index]
             )
             last_advantage = (
                 delta
-                + float(gamma)
-                * float(gae_lambda)
+                + transition_discount
+                * gae_lambda
                 * non_terminal
                 * last_advantage
             )
@@ -122,6 +156,18 @@ class PPORolloutBuffer(object):
             ).to(device),
             "old_values": torch.from_numpy(
                 self.values[active]
+            ).to(device),
+            "rewards": torch.from_numpy(
+                self.rewards[active]
+            ).to(device),
+            "dones": torch.from_numpy(
+                self.dones[active]
+            ).to(device),
+            "durations": torch.from_numpy(
+                self.durations[active]
+            ).to(device),
+            "transition_discounts": torch.from_numpy(
+                self.transition_discounts[active]
             ).to(device),
             "advantages": torch.from_numpy(
                 self.advantages[active]

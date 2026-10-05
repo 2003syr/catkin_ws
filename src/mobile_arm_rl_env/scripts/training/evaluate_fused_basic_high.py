@@ -128,8 +128,11 @@ def main():
     reward_term_sums = collections.Counter()
     safety_reasons = collections.Counter()
     terminal_projection_max = 0.0
+    terminal_student_alignment_sum = 0.0
+    terminal_student_alignment_count = 0
     terminal_alignment_sum = 0.0
     terminal_alignment_count = 0
+    terminal_pose_stage_counts = collections.Counter()
     try:
         for episode_index in range(len(scenarios)):
             scenario = sampler.next()
@@ -144,6 +147,11 @@ def main():
             episode_invalid_terminal_steps = 0
             episode_terminal_projection = 0.0
             episode_terminal_projection_max = 0.0
+            episode_terminal_student_alignment_sum = 0.0
+            episode_terminal_student_alignment_count = 0
+            episode_terminal_alignment_sum = 0.0
+            episode_terminal_alignment_count = 0
+            episode_terminal_pose_stage_counts = collections.Counter()
             episode_requested_stages = collections.Counter()
             episode_executed_stages = collections.Counter()
             episode_terminations = collections.Counter()
@@ -289,12 +297,30 @@ def main():
                     "terminal_ee_norm_clipped", False
                 )))
                 if executed_stage == TERMINAL_STAGE:
-                    alignment = float(info.get(
-                        "terminal_ee_alignment_cosine", 0.0
+                    pose_stage = str(info.get(
+                        "terminal_pose_stage", "UNKNOWN"
                     ))
-                    if np.isfinite(alignment):
-                        terminal_alignment_sum += alignment
+                    terminal_pose_stage_counts[pose_stage] += 1
+                    episode_terminal_pose_stage_counts[pose_stage] += 1
+                    student_alignment = float(info.get(
+                        "terminal_ee_student_alignment_cosine", 0.0
+                    ))
+                    executed_alignment = float(info.get(
+                        "terminal_ee_executed_alignment_cosine",
+                        info.get("terminal_ee_alignment_cosine", 0.0),
+                    ))
+                    if np.isfinite(student_alignment):
+                        terminal_student_alignment_sum += student_alignment
+                        terminal_student_alignment_count += 1
+                        episode_terminal_student_alignment_sum += (
+                            student_alignment
+                        )
+                        episode_terminal_student_alignment_count += 1
+                    if np.isfinite(executed_alignment):
+                        terminal_alignment_sum += executed_alignment
                         terminal_alignment_count += 1
+                        episode_terminal_alignment_sum += executed_alignment
+                        episode_terminal_alignment_count += 1
             category = str(scenario.get("category", "unknown"))
             category_counts = categories.setdefault(
                 category, collections.Counter()
@@ -381,7 +407,10 @@ def main():
                 "safety_projection_abs={:.6f} "
                 "safety_projection_max={:.6f} "
                 "base_command_projection_mean={:.6f} "
-                "ee_command_projection_mean={:.6f} reward={:.4f} "
+                "ee_command_projection_mean={:.6f} "
+                "terminal_pose_stages={} "
+                "terminal_student_alignment_mean={:.6f} "
+                "terminal_executed_alignment_mean={:.6f} reward={:.4f} "
                 "reward_terms={}".format(
                     episode_index + 1,
                     dict(episode_requested_stages),
@@ -418,6 +447,13 @@ def main():
                     episode_ee_projection_sum / float(max(
                         episode_high_steps, 1
                     )),
+                    dict(episode_terminal_pose_stage_counts),
+                    episode_terminal_student_alignment_sum / float(max(
+                        episode_terminal_student_alignment_count, 1
+                    )),
+                    episode_terminal_alignment_sum / float(max(
+                        episode_terminal_alignment_count, 1
+                    )),
                     episode_reward,
                     dict(episode_reward_terms),
                 )
@@ -448,8 +484,15 @@ def main():
         "terminal_projection_mean": float(totals["terminal_projection"])
         / float(max(totals["terminal_steps"], 1)),
         "terminal_projection_max": float(terminal_projection_max),
+        "terminal_student_alignment_cosine_mean": float(
+            terminal_student_alignment_sum
+        ) / float(max(terminal_student_alignment_count, 1)),
+        "terminal_executed_alignment_cosine_mean": float(
+            terminal_alignment_sum
+        ) / float(max(terminal_alignment_count, 1)),
         "terminal_alignment_cosine_mean": float(terminal_alignment_sum)
         / float(max(terminal_alignment_count, 1)),
+        "terminal_pose_stage_counts": dict(terminal_pose_stage_counts),
         "terminal_forced_steps": int(totals["terminal_forced_steps"]),
         "terminal_progress_fallbacks": int(
             totals["terminal_progress_fallbacks"]

@@ -318,7 +318,8 @@ class FusedHighEnvironmentServer(object):
                         self.environment.terminal_student_blend
                     ),
                     "diagnostics_contract": (
-                        "stage_option_action_projection_safety_v2"
+                        "stage_option_action_projection_safety_"
+                        "terminal_alignment_v3"
                     ),
                 })
             if not self.basic_hierarchy:
