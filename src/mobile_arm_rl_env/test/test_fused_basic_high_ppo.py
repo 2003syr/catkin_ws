@@ -41,6 +41,9 @@ from training.train_fused_basic_high_ppo import (
     _ppo_update,
     _recovery_checkpoint_path,
     _restore_random_state,
+    _resolved_critic_epochs,
+    _resolved_critic_learning_rate,
+    _resolved_critic_maximum_gradient_norm,
     _save_dagger_dataset,
     _stage_term_means,
     _new_terminal_blend_curriculum,
@@ -394,6 +397,11 @@ class FusedBasicHighPpoTest(unittest.TestCase):
         for parameter in reference.parameters():
             parameter.requires_grad_(False)
         optimizer = torch.optim.Adam(model.parameters(), lr=1.0e-2)
+        critic_optimizer = torch.optim.Adam(
+            list(model.critic_backbone.parameters())
+            + list(model.critic.parameters()),
+            lr=2.0e-2,
+        )
         buffer = PPORolloutBuffer(
             capacity=8,
             observation_dim=model.OBS_DIM,
@@ -458,6 +466,7 @@ class FusedBasicHighPpoTest(unittest.TestCase):
             teacher_coefficient=1.0,
             reference_model=reference,
             reference_coefficient=0.0,
+            critic_optimizer=critic_optimizer,
         )
 
         self.assertTrue(bool(metrics["kl_early_stop"]))
@@ -497,6 +506,135 @@ class FusedBasicHighPpoTest(unittest.TestCase):
             for name, value in critic_before.items()
         )
         self.assertTrue(critic_changed)
+
+    def test_critic_hyperparameters_fall_back_and_can_be_decoupled(self):
+        legacy = SimpleNamespace(
+            learning_rate=3.0e-5,
+            ppo_epochs=4,
+            maximum_gradient_norm=0.5,
+        )
+        decoupled = SimpleNamespace(
+            learning_rate=3.0e-5,
+            ppo_epochs=4,
+            maximum_gradient_norm=0.5,
+            critic_learning_rate=1.0e-4,
+            critic_epochs=8,
+            critic_maximum_gradient_norm=1.0,
+        )
+
+        self.assertAlmostEqual(
+            _resolved_critic_learning_rate(legacy), 3.0e-5
+        )
+        self.assertEqual(_resolved_critic_epochs(legacy), 4)
+        self.assertAlmostEqual(
+            _resolved_critic_maximum_gradient_norm(legacy), 0.5
+        )
+        self.assertAlmostEqual(
+            _resolved_critic_learning_rate(decoupled), 1.0e-4
+        )
+        self.assertEqual(_resolved_critic_epochs(decoupled), 8)
+        self.assertAlmostEqual(
+            _resolved_critic_maximum_gradient_norm(decoupled), 1.0
+        )
+
+    def test_critic_warmup_freezes_actor_and_updates_critic(self):
+        torch.manual_seed(23)
+        np.random.seed(23)
+        model = FusedBasicHighActorCritic(hidden_sizes=[16, 16])
+        reference = copy.deepcopy(model)
+        actor_optimizer = torch.optim.Adam(
+            model.parameters(), lr=1.0e-2
+        )
+        critic_optimizer = torch.optim.Adam(
+            list(model.critic_backbone.parameters())
+            + list(model.critic.parameters()),
+            lr=2.0e-2,
+        )
+        buffer = PPORolloutBuffer(
+            capacity=8,
+            observation_dim=model.OBS_DIM,
+            action_dim=model.ACTION_DIM,
+        )
+        observations = torch.randn((8, model.OBS_DIM))
+        with torch.no_grad():
+            actions, stages, log_probabilities, values = model.act(
+                observations
+            )
+        teacher_action = np.zeros(model.ACTION_DIM, dtype=np.float32)
+        for index in range(8):
+            buffer.add(
+                observations[index].numpy(),
+                actions[index].numpy(),
+                teacher_action,
+                True,
+                float(log_probabilities[index]),
+                float(values[index]),
+                0.0,
+                False,
+            )
+        buffer.advantages[:buffer.size] = 1.0
+        buffer.returns[:buffer.size] = (
+            values.numpy()
+            + np.linspace(-3.0, 3.0, buffer.size, dtype=np.float32)
+        )
+        actor_names = (
+            "actor_backbone.", "actor_mean.", "stage_head.", "log_std"
+        )
+        critic_names = ("critic_backbone.", "critic.")
+        actor_before = {
+            name: value.clone()
+            for name, value in model.state_dict().items()
+            if name.startswith(actor_names)
+        }
+        critic_before = {
+            name: value.clone()
+            for name, value in model.state_dict().items()
+            if name.startswith(critic_names)
+        }
+        args = SimpleNamespace(
+            stage_balanced_advantages=False,
+            ppo_epochs=3,
+            critic_epochs=2,
+            batch_size=4,
+            clip_ratio=0.10,
+            value_clip_range=0.0,
+            teacher_kl_std=0.10,
+            teacher_terminal_weight=1.0,
+            teacher_stage_coefficient=0.20,
+            reference_stage_coefficient=0.20,
+            entropy_coefficient=0.0,
+            value_coefficient=0.25,
+            maximum_gradient_norm=0.5,
+            critic_maximum_gradient_norm=1.0,
+            target_policy_kl=0.01,
+            policy_kl_stop_multiplier=1.5,
+        )
+
+        metrics = _ppo_update(
+            model=model,
+            optimizer=actor_optimizer,
+            critic_optimizer=critic_optimizer,
+            buffer=buffer,
+            stages=stages.numpy(),
+            teacher_stages=stages.numpy(),
+            device=torch.device("cpu"),
+            args=args,
+            teacher_coefficient=1.0,
+            reference_model=reference,
+            reference_coefficient=0.0,
+            actor_updates_enabled=False,
+        )
+
+        self.assertFalse(bool(metrics["actor_updates_enabled"]))
+        self.assertEqual(int(metrics["minibatches_completed"]), 0)
+        self.assertEqual(int(metrics["critic_minibatches_completed"]), 4)
+        self.assertEqual(int(metrics["critic_minibatches_expected"]), 4)
+        for name, expected in actor_before.items():
+            self.assertTrue(torch.equal(model.state_dict()[name], expected))
+        self.assertTrue(any(
+            not torch.equal(model.state_dict()[name], value)
+            for name, value in critic_before.items()
+        ))
 
     def test_critic_value_clipping_can_be_disabled(self):
         values = torch.tensor([2.0, -2.0])

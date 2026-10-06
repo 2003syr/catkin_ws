@@ -137,11 +137,21 @@ def main():
         "terminal_teacher_weight={:.3f} "
         "minibatches=balanced_complete_rollout "
         "actor_critic_phases=separate "
-        "value_clip_range={:.6f} value_clip_enabled={}".format(
+        "value_clip_range={:.6f} value_clip_enabled={} "
+        "actor_lr={:.8f} actor_epochs={} actor_grad_clip={:.3f} "
+        "critic_lr={:.8f} critic_epochs={} critic_grad_clip={:.3f} "
+        "critic_warmup_updates={}".format(
             bool(args.stage_balanced_advantages),
             args.teacher_terminal_weight,
             _resolved_value_clip_range(args),
             bool(_resolved_value_clip_range(args) > 0.0),
+            args.learning_rate,
+            args.ppo_epochs,
+            args.maximum_gradient_norm,
+            _resolved_critic_learning_rate(args),
+            _resolved_critic_epochs(args),
+            _resolved_critic_maximum_gradient_norm(args),
+            args.critic_warmup_updates,
         )
     )
     print(
@@ -164,9 +174,15 @@ def main():
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.learning_rate
     )
+    critic_optimizer = torch.optim.Adam(
+        _critic_parameters(model),
+        lr=_resolved_critic_learning_rate(args),
+    )
     total_steps = 0
     total_low_steps = 0
     update_index = 0
+    critic_warmup_updates_remaining = int(args.critic_warmup_updates)
+    critic_optimizer_restored = False
     reference_model = None
     source_discount_mode = None
     reference_kl_coefficient = float(args.reference_kl_coefficient)
@@ -176,6 +192,11 @@ def main():
         _validate_checkpoint(checkpoint, model)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
+        if checkpoint.get("critic_optimizer") is not None:
+            critic_optimizer.load_state_dict(
+                checkpoint["critic_optimizer"]
+            )
+            critic_optimizer_restored = True
         normalizer.load_state_dict(checkpoint["normalizer"])
         reference_model = copy.deepcopy(model).to(device)
         reference_model.load_state_dict(
@@ -188,6 +209,10 @@ def main():
         total_steps = int(checkpoint.get("total_steps", 0))
         total_low_steps = int(checkpoint.get("total_low_steps", 0))
         update_index = int(checkpoint.get("update_index", 0))
+        critic_warmup_updates_remaining = int(checkpoint.get(
+            "critic_warmup_updates_remaining",
+            args.critic_warmup_updates,
+        ))
         random_state_restored = _restore_random_state(
             checkpoint.get("random_state")
         )
@@ -196,12 +221,15 @@ def main():
         )
         print(
             "resumed basic high checkpoint={} steps={} update={} "
-            "reference_kl_coef={:.6f} random_state_restored={}".format(
+            "reference_kl_coef={:.6f} random_state_restored={} "
+            "critic_optimizer_restored={} critic_warmup_remaining={}".format(
                 args.resume,
                 total_steps,
                 update_index,
                 reference_kl_coefficient,
                 random_state_restored,
+                critic_optimizer_restored,
+                critic_warmup_updates_remaining,
             )
         )
     elif args.ppo_initial_checkpoint:
@@ -597,6 +625,10 @@ def main():
                 reference_model=reference_model,
                 reference_kl_coefficient=reference_kl_coefficient,
                 terminal_blend_curriculum=terminal_blend_curriculum,
+                critic_optimizer=critic_optimizer,
+                critic_warmup_updates_remaining=(
+                    critic_warmup_updates_remaining
+                ),
             )
             if student_gate is None or not _gate_pass(student_gate, args):
                 raise RuntimeError(
@@ -623,6 +655,10 @@ def main():
                 reference_model=reference_model,
                 reference_kl_coefficient=reference_kl_coefficient,
                 terminal_blend_curriculum=terminal_blend_curriculum,
+                critic_optimizer=critic_optimizer,
+                critic_warmup_updates_remaining=(
+                    critic_warmup_updates_remaining
+                ),
             )
 
         if reference_model is None:
@@ -1049,6 +1085,9 @@ def main():
             reference_kl_coefficient_used = float(
                 reference_kl_coefficient
             )
+            actor_updates_enabled = bool(
+                critic_warmup_updates_remaining <= 0
+            )
             metrics = _ppo_update(
                 model,
                 optimizer,
@@ -1065,16 +1104,34 @@ def main():
                 ),
                 reference_model,
                 reference_kl_coefficient_used,
+                critic_optimizer=critic_optimizer,
+                actor_updates_enabled=actor_updates_enabled,
             )
-            reference_kl_coefficient = _adapt_kl_coefficient(
-                reference_kl_coefficient,
-                metrics["reference_kl"],
-                args.reference_kl_target,
-                args.reference_kl_min_coefficient,
-                args.reference_kl_max_coefficient,
-                args.reference_kl_adaptation_factor,
-                args.reference_kl_tolerance,
-            )
+            if actor_updates_enabled:
+                reference_kl_coefficient = _adapt_kl_coefficient(
+                    reference_kl_coefficient,
+                    metrics["reference_kl"],
+                    args.reference_kl_target,
+                    args.reference_kl_min_coefficient,
+                    args.reference_kl_max_coefficient,
+                    args.reference_kl_adaptation_factor,
+                    args.reference_kl_tolerance,
+                )
+            else:
+                critic_warmup_updates_remaining = max(
+                    critic_warmup_updates_remaining - 1, 0
+                )
+                print(
+                    "basic_high_critic_warmup update={} actor_frozen=True "
+                    "remaining={} value_ev_before={:.6f} "
+                    "value_ev_after={:.6f} value_rmse={:.6f}".format(
+                        update_index + 1,
+                        critic_warmup_updates_remaining,
+                        metrics["value_explained_variance_before"],
+                        metrics["value_explained_variance_after"],
+                        metrics["value_rmse"],
+                    )
+                )
             buffer.clear()
             rollout_stages = []
             rollout_teacher_stages = []
@@ -1097,6 +1154,10 @@ def main():
                     reference_model=reference_model,
                     reference_kl_coefficient=reference_kl_coefficient,
                     terminal_blend_curriculum=terminal_blend_curriculum,
+                    critic_optimizer=critic_optimizer,
+                    critic_warmup_updates_remaining=(
+                        critic_warmup_updates_remaining
+                    ),
                 )
                 print(
                     "basic_high_recovery_checkpoint update={} path={}".format(
@@ -1213,6 +1274,25 @@ def main():
                 ),
                 "critic_update_fraction": float(
                     metrics["critic_update_fraction"]
+                ),
+                "actor_updates_enabled": bool(
+                    metrics["actor_updates_enabled"]
+                ),
+                "critic_warmup_updates_remaining": int(
+                    critic_warmup_updates_remaining
+                ),
+                "actor_learning_rate": float(
+                    metrics["actor_learning_rate"]
+                ),
+                "critic_learning_rate": float(
+                    metrics["critic_learning_rate"]
+                ),
+                "critic_epochs": int(metrics["critic_epochs"]),
+                "actor_maximum_gradient_norm": float(
+                    args.maximum_gradient_norm
+                ),
+                "critic_maximum_gradient_norm": float(
+                    metrics["critic_maximum_gradient_norm"]
                 ),
                 "policy_kl_mean": float(metrics["policy_kl"]),
                 "policy_kl_max": float(metrics["policy_kl_max"]),
@@ -1364,6 +1444,10 @@ def main():
                     reference_model=reference_model,
                     reference_kl_coefficient=reference_kl_coefficient,
                     terminal_blend_curriculum=terminal_blend_curriculum,
+                    critic_optimizer=critic_optimizer,
+                    critic_warmup_updates_remaining=(
+                        critic_warmup_updates_remaining
+                    ),
                 )
                 gate = _evaluate_policy(
                     client,
@@ -1412,6 +1496,10 @@ def main():
                         reference_kl_coefficient=reference_kl_coefficient,
                         terminal_blend_curriculum=(
                             terminal_blend_curriculum
+                        ),
+                        critic_optimizer=critic_optimizer,
+                        critic_warmup_updates_remaining=(
+                            critic_warmup_updates_remaining
                         ),
                     )
                     print(
@@ -1475,6 +1563,10 @@ def main():
                         terminal_blend_curriculum=(
                             milestone_curriculum
                         ),
+                        critic_optimizer=critic_optimizer,
+                        critic_warmup_updates_remaining=(
+                            critic_warmup_updates_remaining
+                        ),
                     )
                     _save_checkpoint(
                         _recovery_checkpoint_path(args.output),
@@ -1492,6 +1584,10 @@ def main():
                         ),
                         terminal_blend_curriculum=(
                             terminal_blend_curriculum
+                        ),
+                        critic_optimizer=critic_optimizer,
+                        critic_warmup_updates_remaining=(
+                            critic_warmup_updates_remaining
                         ),
                     )
                     print(
@@ -1552,6 +1648,10 @@ def main():
                 reference_model=reference_model,
                 reference_kl_coefficient=reference_kl_coefficient,
                 terminal_blend_curriculum=terminal_blend_curriculum,
+                critic_optimizer=critic_optimizer,
+                critic_warmup_updates_remaining=(
+                    critic_warmup_updates_remaining
+                ),
             )
         _save_checkpoint(
             _last_checkpoint_path(args.output),
@@ -1566,6 +1666,10 @@ def main():
             reference_model=reference_model,
             reference_kl_coefficient=reference_kl_coefficient,
             terminal_blend_curriculum=terminal_blend_curriculum,
+            critic_optimizer=critic_optimizer,
+            critic_warmup_updates_remaining=(
+                critic_warmup_updates_remaining
+            ),
         )
         print(
             "basic_high_complete best={} last={} high_steps={} low_steps={} "
@@ -3238,7 +3342,11 @@ def _ppo_update(
         args,
         teacher_coefficient,
         reference_model,
-        reference_coefficient):
+        reference_coefficient,
+        critic_optimizer=None,
+        actor_updates_enabled=True):
+    if critic_optimizer is None:
+        critic_optimizer = optimizer
     data = buffer.tensors(device)
     stages = torch.as_tensor(stages, dtype=torch.int64, device=device)
     if tuple(stages.shape) != (buffer.size,):
@@ -3260,16 +3368,8 @@ def _ppo_update(
     value_rmse_before = float(torch.sqrt(torch.mean(
         (values_before - value_targets).pow(2)
     )).item())
-    actor_parameters = (
-        list(model.actor_backbone.parameters())
-        + list(model.actor_mean.parameters())
-        + list(model.stage_head.parameters())
-        + [model.log_std]
-    )
-    critic_parameters = (
-        list(model.critic_backbone.parameters())
-        + list(model.critic.parameters())
-    )
+    actor_parameters = _actor_parameters(model)
+    critic_parameters = _critic_parameters(model)
     actor_totals = collections.Counter()
     critic_totals = collections.Counter()
     actor_count = 0
@@ -3295,7 +3395,8 @@ def _ppo_update(
     # therefore, measure KL on the complete rollout and stop before another
     # actor update can compound an overshoot.  Critic training remains
     # independent and always runs below.
-    for epoch_index in range(args.ppo_epochs):
+    actor_epoch_count = int(args.ppo_epochs) if actor_updates_enabled else 0
+    for epoch_index in range(actor_epoch_count):
         epochs_completed = epoch_index + 1
         epoch_completed = True
         epoch_minibatches = list(_balanced_ppo_minibatch_indices(
@@ -3466,7 +3567,11 @@ def _ppo_update(
     # The value function has an independent optimization phase.  Even when
     # the actor reaches its KL trust-region boundary, every critic epoch is
     # completed so that GAE does not remain tied to an untrained baseline.
-    for unused_epoch_index in range(args.ppo_epochs):
+    critic_epoch_count = _resolved_critic_epochs(args)
+    critic_maximum_gradient_norm = (
+        _resolved_critic_maximum_gradient_norm(args)
+    )
+    for unused_epoch_index in range(critic_epoch_count):
         for indices_np in _balanced_ppo_minibatch_indices(
                 buffer.size, args.batch_size):
             indices = torch.from_numpy(
@@ -3483,14 +3588,14 @@ def _ppo_update(
                 value_clip_range,
             )
 
-            optimizer.zero_grad()
+            critic_optimizer.zero_grad()
             (args.value_coefficient * value_loss).backward()
             _clear_parameter_gradients(actor_parameters)
             critic_grad_norm = _parameter_gradient_norm(critic_parameters)
             torch.nn.utils.clip_grad_norm_(
-                critic_parameters, args.maximum_gradient_norm
+                critic_parameters, critic_maximum_gradient_norm
             )
-            optimizer.step()
+            critic_optimizer.step()
 
             batch_count = int(indices.shape[0])
             critic_totals["value_loss"] += (
@@ -3607,6 +3712,10 @@ def _ppo_update(
         int(math.ceil(float(buffer.size) / float(args.batch_size)))
         * int(args.ppo_epochs)
     )
+    critic_minibatches_expected = (
+        int(math.ceil(float(buffer.size) / float(args.batch_size)))
+        * int(critic_epoch_count)
+    )
     metrics["minibatches_expected"] = float(minibatches_expected)
     metrics["update_fraction"] = float(minibatches_completed) / float(max(
         minibatches_expected, 1
@@ -3618,11 +3727,20 @@ def _ppo_update(
         critic_minibatches_completed
     )
     metrics["critic_minibatches_expected"] = float(
-        minibatches_expected
+        critic_minibatches_expected
     )
     metrics["critic_update_fraction"] = float(
         critic_minibatches_completed
-    ) / float(max(minibatches_expected, 1))
+    ) / float(max(critic_minibatches_expected, 1))
+    metrics["actor_updates_enabled"] = float(actor_updates_enabled)
+    metrics["actor_learning_rate"] = _optimizer_learning_rate(optimizer)
+    metrics["critic_learning_rate"] = _optimizer_learning_rate(
+        critic_optimizer
+    )
+    metrics["critic_epochs"] = float(critic_epoch_count)
+    metrics["critic_maximum_gradient_norm"] = float(
+        critic_maximum_gradient_norm
+    )
     metrics["value_clip_range"] = float(value_clip_range)
     metrics["value_clip_enabled"] = float(value_clip_range > 0.0)
     metrics["policy_kl_max"] = float(policy_kl_max)
@@ -3718,6 +3836,24 @@ def _balanced_ppo_minibatch_indices(size, batch_size):
             yield indices
 
 
+def _actor_parameters(model):
+    """Return policy parameters while excluding the value function."""
+    return (
+        list(model.actor_backbone.parameters())
+        + list(model.actor_mean.parameters())
+        + list(model.stage_head.parameters())
+        + [model.log_std]
+    )
+
+
+def _critic_parameters(model):
+    """Return value-function parameters while excluding the policy."""
+    return (
+        list(model.critic_backbone.parameters())
+        + list(model.critic.parameters())
+    )
+
+
 def _clear_parameter_gradients(parameters):
     """Keep inactive Adam parameters out of a phase-specific optimizer step."""
     for parameter in parameters:
@@ -3735,6 +3871,12 @@ def _parameter_gradient_norm(parameters):
     return float(math.sqrt(max(squared_norm, 0.0)))
 
 
+def _optimizer_learning_rate(optimizer):
+    if not optimizer.param_groups:
+        return 0.0
+    return float(optimizer.param_groups[0]["lr"])
+
+
 def _resolved_value_clip_range(args):
     """Return the critic clip range without coupling it to policy clipping.
 
@@ -3745,6 +3887,27 @@ def _resolved_value_clip_range(args):
     configured = getattr(args, "value_clip_range", None)
     if configured is None:
         return float(args.clip_ratio)
+    return float(configured)
+
+
+def _resolved_critic_learning_rate(args):
+    configured = getattr(args, "critic_learning_rate", None)
+    if configured is None:
+        return float(args.learning_rate)
+    return float(configured)
+
+
+def _resolved_critic_epochs(args):
+    configured = getattr(args, "critic_epochs", None)
+    if configured is None:
+        return int(args.ppo_epochs)
+    return int(configured)
+
+
+def _resolved_critic_maximum_gradient_norm(args):
+    configured = getattr(args, "critic_maximum_gradient_norm", None)
+    if configured is None:
+        return float(args.maximum_gradient_norm)
     return float(configured)
 
 
@@ -3979,7 +4142,9 @@ def _save_checkpoint(
         training_phase="ppo",
         completed_dagger_round=None,
         optimizer_role="ppo",
-        terminal_blend_curriculum=None):
+        terminal_blend_curriculum=None,
+        critic_optimizer=None,
+        critic_warmup_updates_remaining=0):
     directory = os.path.dirname(os.path.abspath(path))
     if directory and not os.path.isdir(directory):
         os.makedirs(directory)
@@ -3998,6 +4163,11 @@ def _save_checkpoint(
             else reference_model.state_dict()
         ),
         "optimizer": optimizer.state_dict(),
+        "critic_optimizer": (
+            None
+            if critic_optimizer is None
+            else critic_optimizer.state_dict()
+        ),
         "normalizer": normalizer.state_dict(),
         "observation_dim": model.OBS_DIM,
         "action_dim": model.ACTION_DIM,
@@ -4007,6 +4177,9 @@ def _save_checkpoint(
         "total_steps": int(total_steps),
         "total_low_steps": int(total_low_steps),
         "update_index": int(update_index),
+        "critic_warmup_updates_remaining": int(
+            critic_warmup_updates_remaining
+        ),
         "training_phase": str(training_phase),
         "completed_dagger_round": (
             None
@@ -4039,7 +4212,7 @@ def _save_checkpoint(
         ),
         "environment_metadata": dict(environment_metadata),
         "training_contract": (
-            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v9"
+            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v10"
         ),
         "discount_contract": {
             "mode": str(getattr(args, "discount_mode", "high_step")),
@@ -4065,6 +4238,20 @@ def _save_checkpoint(
                 "full_rollout_kl_after_each_actor_minibatch"
             ),
             "critic_update": "independent_complete_epochs",
+            "critic_optimizer": "independent_adam",
+            "critic_learning_rate": float(
+                _resolved_critic_learning_rate(args)
+            ),
+            "critic_epochs": int(_resolved_critic_epochs(args)),
+            "critic_maximum_gradient_norm": float(
+                _resolved_critic_maximum_gradient_norm(args)
+            ),
+            "critic_warmup_updates_configured": int(
+                getattr(args, "critic_warmup_updates", 0)
+            ),
+            "critic_warmup_updates_remaining": int(
+                critic_warmup_updates_remaining
+            ),
             "critic_value_clip_range": float(
                 _resolved_value_clip_range(args)
             ),
@@ -4363,6 +4550,32 @@ def _parse_arguments():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--critic-epochs",
+        type=int,
+        default=None,
+        help=(
+            "critic-only epochs per rollout; omitted uses --ppo-epochs"
+        ),
+    )
+    parser.add_argument(
+        "--critic-learning-rate",
+        type=float,
+        default=None,
+        help=(
+            "learning rate of the independent critic Adam optimizer; "
+            "omitted uses --learning-rate"
+        ),
+    )
+    parser.add_argument(
+        "--critic-warmup-updates",
+        type=int,
+        default=0,
+        help=(
+            "number of fresh on-policy rollouts that update only the critic "
+            "before actor PPO updates are enabled"
+        ),
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument(
@@ -4433,6 +4646,15 @@ def _parse_arguments():
         "--policy-kl-stop-multiplier", type=float, default=1.5
     )
     parser.add_argument("--maximum-gradient-norm", type=float, default=0.50)
+    parser.add_argument(
+        "--critic-maximum-gradient-norm",
+        type=float,
+        default=None,
+        help=(
+            "independent critic gradient clipping norm; omitted uses "
+            "--maximum-gradient-norm"
+        ),
+    )
     parser.add_argument("--hidden-sizes", type=int, nargs="+", default=[256, 256])
     parser.add_argument("--initial-log-std", type=float, default=-2.5)
     parser.add_argument(
@@ -4516,6 +4738,22 @@ def _parse_arguments():
         parser.error("--checkpoint-interval must be non-negative")
     if args.batch_size <= 0 or args.ppo_epochs <= 0:
         parser.error("batch size and PPO epochs must be positive")
+    if args.learning_rate <= 0.0:
+        parser.error("--learning-rate must be positive")
+    if args.critic_epochs is not None and args.critic_epochs <= 0:
+        parser.error("--critic-epochs must be positive")
+    if (
+            args.critic_learning_rate is not None
+            and args.critic_learning_rate <= 0.0):
+        parser.error("--critic-learning-rate must be positive")
+    if args.critic_warmup_updates < 0:
+        parser.error("--critic-warmup-updates must be non-negative")
+    if args.maximum_gradient_norm <= 0.0:
+        parser.error("--maximum-gradient-norm must be positive")
+    if (
+            args.critic_maximum_gradient_norm is not None
+            and args.critic_maximum_gradient_norm <= 0.0):
+        parser.error("--critic-maximum-gradient-norm must be positive")
     if not 0.0 < args.gamma <= 1.0:
         parser.error("--gamma must be in (0, 1]")
     if not 0.0 <= args.gae_lambda <= 1.0:
