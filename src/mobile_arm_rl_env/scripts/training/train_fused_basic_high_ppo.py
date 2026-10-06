@@ -136,9 +136,12 @@ def main():
         "basic_high_ppo_sampling stage_balanced_advantages={} "
         "terminal_teacher_weight={:.3f} "
         "minibatches=balanced_complete_rollout "
-        "actor_critic_phases=separate".format(
+        "actor_critic_phases=separate "
+        "value_clip_range={:.6f} value_clip_enabled={}".format(
             bool(args.stage_balanced_advantages),
             args.teacher_terminal_weight,
+            _resolved_value_clip_range(args),
+            bool(_resolved_value_clip_range(args) > 0.0),
         )
     )
     print(
@@ -3277,6 +3280,7 @@ def _ppo_update(
     minibatches_completed = 0
     critic_full_epochs_completed = 0
     critic_minibatches_completed = 0
+    value_clip_range = _resolved_value_clip_range(args)
     policy_kl_max = 0.0
     policy_kl_batch_max = 0.0
     policy_kl_stop_value = 0.0
@@ -3472,18 +3476,12 @@ def _ppo_update(
             old_values = data["old_values"].index_select(0, indices)
             returns = data["returns"].index_select(0, indices)
             values = model.get_value(observations)
-            clipped_values = old_values + torch.clamp(
-                values - old_values,
-                -args.clip_ratio,
-                args.clip_ratio,
+            value_loss, value_clip_fraction = _critic_value_loss(
+                values,
+                old_values,
+                returns,
+                value_clip_range,
             )
-            value_clip_fraction = (
-                torch.abs(values - old_values) > args.clip_ratio
-            ).float().mean()
-            value_loss = 0.5 * torch.max(
-                (values - returns).pow(2),
-                (clipped_values - returns).pow(2),
-            ).mean()
 
             optimizer.zero_grad()
             (args.value_coefficient * value_loss).backward()
@@ -3625,6 +3623,8 @@ def _ppo_update(
     metrics["critic_update_fraction"] = float(
         critic_minibatches_completed
     ) / float(max(minibatches_expected, 1))
+    metrics["value_clip_range"] = float(value_clip_range)
+    metrics["value_clip_enabled"] = float(value_clip_range > 0.0)
     metrics["policy_kl_max"] = float(policy_kl_max)
     metrics["policy_kl_batch_max"] = float(policy_kl_batch_max)
     metrics["policy_kl_stop_value"] = float(policy_kl_stop_value)
@@ -3733,6 +3733,49 @@ def _parameter_gradient_norm(parameters):
         gradient = parameter.grad.detach()
         squared_norm += float(torch.sum(gradient * gradient).item())
     return float(math.sqrt(max(squared_norm, 0.0)))
+
+
+def _resolved_value_clip_range(args):
+    """Return the critic clip range without coupling it to policy clipping.
+
+    Older commands and checkpoints did not define ``value_clip_range``.  For
+    them, retain the legacy behavior by falling back to ``clip_ratio``.  A
+    configured value of zero explicitly disables value clipping.
+    """
+    configured = getattr(args, "value_clip_range", None)
+    if configured is None:
+        return float(args.clip_ratio)
+    return float(configured)
+
+
+def _critic_value_loss(values, old_values, returns, value_clip_range):
+    """Compute PPO critic loss and the fraction affected by value clipping.
+
+    Policy ratios are dimensionless, whereas values are expressed in return
+    units.  Reusing the policy clip ratio (for example 0.1) for targets whose
+    standard deviation is tens of reward units can nearly freeze the critic.
+    A non-positive range therefore selects ordinary squared-error regression.
+    """
+    clip_range = float(value_clip_range)
+    if clip_range <= 0.0:
+        loss = 0.5 * (values - returns).pow(2).mean()
+        clip_fraction = torch.zeros(
+            (), dtype=values.dtype, device=values.device
+        )
+        return loss, clip_fraction
+    clipped_values = old_values + torch.clamp(
+        values - old_values,
+        -clip_range,
+        clip_range,
+    )
+    clip_fraction = (
+        torch.abs(values - old_values) > clip_range
+    ).float().mean()
+    loss = 0.5 * torch.max(
+        (values - returns).pow(2),
+        (clipped_values - returns).pow(2),
+    ).mean()
+    return loss, clip_fraction
 
 
 def _explained_variance(predictions, targets):
@@ -3996,7 +4039,7 @@ def _save_checkpoint(
         ),
         "environment_metadata": dict(environment_metadata),
         "training_contract": (
-            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v8"
+            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v9"
         ),
         "discount_contract": {
             "mode": str(getattr(args, "discount_mode", "high_step")),
@@ -4022,6 +4065,12 @@ def _save_checkpoint(
                 "full_rollout_kl_after_each_actor_minibatch"
             ),
             "critic_update": "independent_complete_epochs",
+            "critic_value_clip_range": float(
+                _resolved_value_clip_range(args)
+            ),
+            "critic_value_clip_enabled": bool(
+                _resolved_value_clip_range(args) > 0.0
+            ),
             "gradient_update": "separate_actor_critic_steps",
             "terminal_arm_bc_coefficient": float(
                 args.warmstart_terminal_arm_coefficient
@@ -4335,6 +4384,16 @@ def _parse_arguments():
         ),
     )
     parser.add_argument("--clip-ratio", type=float, default=0.20)
+    parser.add_argument(
+        "--value-clip-range",
+        type=float,
+        default=None,
+        help=(
+            "critic value clipping range in raw return units; omitted "
+            "preserves the legacy --clip-ratio behavior and 0 disables "
+            "critic value clipping"
+        ),
+    )
     parser.add_argument("--value-coefficient", type=float, default=0.50)
     parser.add_argument("--entropy-coefficient", type=float, default=0.001)
     parser.add_argument("--teacher-coefficient", type=float, default=0.50)
@@ -4465,6 +4524,8 @@ def _parse_arguments():
         parser.error(
             "--smdp-discount-reference-low-steps must be non-negative"
         )
+    if args.value_clip_range is not None and args.value_clip_range < 0.0:
+        parser.error("--value-clip-range must be non-negative")
     if (
             args.teacher_episodes <= 0
             or args.teacher_max_attempts < args.teacher_episodes

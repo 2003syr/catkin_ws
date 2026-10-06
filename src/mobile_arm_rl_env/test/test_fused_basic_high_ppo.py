@@ -27,6 +27,7 @@ from training.train_fused_basic_high_ppo import (
     _balanced_ppo_minibatch_indices,
     _balanced_stage_episode_indices,
     _collect_dagger_dataset,
+    _critic_value_loss,
     _dagger_intervention_required,
     _dagger_teacher_probability,
     _discount_reference_low_steps,
@@ -44,6 +45,7 @@ from training.train_fused_basic_high_ppo import (
     _stage_term_means,
     _new_terminal_blend_curriculum,
     _restore_terminal_blend_curriculum,
+    _resolved_value_clip_range,
     _update_terminal_blend_curriculum,
 )
 
@@ -433,6 +435,7 @@ class FusedBasicHighPpoTest(unittest.TestCase):
             ppo_epochs=3,
             batch_size=4,
             clip_ratio=0.10,
+            value_clip_range=0.0,
             teacher_kl_std=0.10,
             teacher_terminal_weight=1.0,
             teacher_stage_coefficient=0.20,
@@ -494,6 +497,41 @@ class FusedBasicHighPpoTest(unittest.TestCase):
             for name, value in critic_before.items()
         )
         self.assertTrue(critic_changed)
+
+    def test_critic_value_clipping_can_be_disabled(self):
+        values = torch.tensor([2.0, -2.0])
+        old_values = torch.tensor([0.0, 0.0])
+        returns = torch.tensor([10.0, -10.0])
+
+        loss, clip_fraction = _critic_value_loss(
+            values, old_values, returns, 0.0
+        )
+
+        self.assertAlmostEqual(float(loss.item()), 32.0, places=6)
+        self.assertAlmostEqual(float(clip_fraction.item()), 0.0)
+
+    def test_critic_value_clipping_uses_return_units(self):
+        values = torch.tensor([2.0, -2.0])
+        old_values = torch.tensor([0.0, 0.0])
+        returns = torch.tensor([10.0, -10.0])
+
+        loss, clip_fraction = _critic_value_loss(
+            values, old_values, returns, 0.1
+        )
+
+        self.assertAlmostEqual(float(loss.item()), 49.005, places=5)
+        self.assertAlmostEqual(float(clip_fraction.item()), 1.0)
+
+    def test_value_clip_range_preserves_legacy_and_accepts_zero(self):
+        legacy = SimpleNamespace(clip_ratio=0.1)
+        disabled = SimpleNamespace(clip_ratio=0.1, value_clip_range=0.0)
+        configured = SimpleNamespace(
+            clip_ratio=0.1, value_clip_range=5.0
+        )
+
+        self.assertAlmostEqual(_resolved_value_clip_range(legacy), 0.1)
+        self.assertAlmostEqual(_resolved_value_clip_range(disabled), 0.0)
+        self.assertAlmostEqual(_resolved_value_clip_range(configured), 5.0)
 
     def test_ppo_minibatches_balance_small_rollout_remainder(self):
         np.random.seed(19)
