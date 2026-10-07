@@ -24,6 +24,7 @@ from training.fused_basic_high_actor_critic import (
 from training.hrl4in_low_actor_critic import RunningObservationNormalizer
 from training.ppo_rollout import PPORolloutBuffer
 from training.train_fused_basic_high_ppo import (
+    _actor_parameters,
     _balanced_ppo_minibatch_indices,
     _balanced_stage_episode_indices,
     _collect_dagger_dataset,
@@ -46,6 +47,7 @@ from training.train_fused_basic_high_ppo import (
     _resolved_critic_maximum_gradient_norm,
     _save_dagger_dataset,
     _stage_term_means,
+    _stage_policy_parameters,
     _new_terminal_blend_curriculum,
     _restore_terminal_blend_curriculum,
     _resolved_value_clip_range,
@@ -185,6 +187,50 @@ class FusedBasicHighPpoTest(unittest.TestCase):
         actions = model.deterministic_action(observations, stages)
         self.assertGreater(float(actions[0, 1]), 0.0)
         self.assertLess(float(actions[1, 1]), 0.0)
+
+    def test_stage_feasibility_blocks_premature_terminal_and_direct_trap(self):
+        model = FusedBasicHighActorCritic(hidden_sizes=[])
+        observations = torch.zeros((1, model.OBS_DIM))
+        observations[0, model.PREVIOUS_STAGE_START] = 1.0
+        observations[0, model.LAST_OPTION_STALLED_INDEX] = 1.0
+
+        mask = model.stage_feasibility_mask(observations)
+        self.assertEqual(mask[0].tolist(), [False, True, False])
+
+        observations[0, model.FINAL_WAYPOINT_ACTIVE_INDEX] = 1.0
+        mask = model.stage_feasibility_mask(observations)
+        self.assertEqual(mask[0].tolist(), [False, True, True])
+
+        observations[0, model.FINAL_WAYPOINT_ACTIVE_INDEX] = 0.0
+        observations[0, model.DIRECT_PATH_INDEX] = 1.0
+        mask = model.stage_feasibility_mask(observations)
+        self.assertEqual(mask[0].tolist(), [True, True, False])
+
+    def test_deterministic_stage_decision_respects_feasibility_mask(self):
+        model = FusedBasicHighActorCritic(hidden_sizes=[])
+        with torch.no_grad():
+            model.stage_head.weight.zero_()
+            model.stage_head.bias.copy_(torch.tensor([10.0, 0.0, -10.0]))
+        observations = torch.zeros((1, model.OBS_DIM))
+        mask = torch.tensor([[False, True, False]])
+        unused_actions, stages = model.deterministic_decision(
+            observations, stage_mask=mask
+        )
+        self.assertEqual(int(stages.item()), model.DETOUR_STAGE)
+
+    def test_freeze_stage_policy_excludes_backbone_and_stage_head(self):
+        model = FusedBasicHighActorCritic(hidden_sizes=[16])
+        trainable = set(id(parameter) for parameter in _actor_parameters(
+            model, freeze_stage_policy=True
+        ))
+        protected = set(id(parameter) for parameter in (
+            _stage_policy_parameters(model)
+        ))
+        continuous = set(
+            id(parameter) for parameter in model.actor_mean.parameters()
+        ) | {id(model.log_std)}
+        self.assertFalse(bool(trainable & protected))
+        self.assertEqual(trainable, continuous)
 
     def test_teacher_kl_is_finite_for_saturated_rule_actions(self):
         model = FusedBasicHighActorCritic(hidden_sizes=[16])

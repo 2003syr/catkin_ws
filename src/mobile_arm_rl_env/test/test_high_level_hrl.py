@@ -33,6 +33,7 @@ from hrl.low_level_wrapper import (
 from hrl.rule_high_policy import RuleBasedHighPolicy, SafeWaypointHighPolicy
 from hrl.subgoal_converter import SubgoalConverter
 from training.fused_box_detour import (
+    update_terminal_control_state,
     update_terminal_pose_latch,
 )
 
@@ -721,6 +722,79 @@ class HighLevelHrlTest(unittest.TestCase):
         self.assertFalse(states[2][2])
         self.assertEqual(states[3][0], "ALIGNED")
         self.assertTrue(states[3][2])
+
+    def test_terminal_control_state_separates_base_and_arm_completion(self):
+        state = ("NONE", 0, 0, False, False)
+        state = update_terminal_control_state(
+            *(state + (
+                0.0, 0.0, 0.20,
+                0.03, 0.06, 0.08, 2, 0.05, 2,
+            ))
+        )
+        self.assertEqual(state[0], "BASE_ROTATE")
+        state = update_terminal_control_state(
+            *(state + (
+                0.0, 0.0, 0.20,
+                0.03, 0.06, 0.08, 2, 0.05, 2,
+            ))
+        )
+        state = update_terminal_control_state(
+            *(state + (
+                0.0, 0.0, 0.20,
+                0.03, 0.06, 0.08, 2, 0.05, 2,
+            ))
+        )
+        self.assertEqual(state[0], "ARM_REACH")
+        self.assertTrue(state[3])
+        self.assertFalse(state[4])
+        state = update_terminal_control_state(
+            *(state + (
+                0.20, 1.0, 0.04,
+                0.03, 0.06, 0.08, 2, 0.05, 2,
+            ))
+        )
+        self.assertEqual(state[0], "ARM_REACH")
+        state = update_terminal_control_state(
+            *(state + (
+                0.20, 1.0, 0.04,
+                0.03, 0.06, 0.08, 2, 0.05, 2,
+            ))
+        )
+        self.assertEqual(state[0], "ALIGNED")
+        self.assertTrue(state[4])
+
+    def test_terminal_stall_error_tracks_only_active_substate(self):
+        environment = HighLevelEnv.__new__(HighLevelEnv)
+        environment.base_subgoal_tolerance = 0.04
+        environment.yaw_subgoal_tolerance = 0.08
+        environment.ee_subgoal_tolerance = 0.05
+        environment.low_environment = FakeLowEnvironment()
+        command = JointHighLevelCommand(
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            subgoal_type=SubgoalType.TERMINAL,
+        )
+        remaining = np.asarray(
+            [0.02, 0.0, 0.80, 0.50, 0.0, 0.0],
+            dtype=np.float64,
+        )
+        environment.low_environment._terminal_pose_stage = (
+            "BASE_TRANSLATE"
+        )
+        self.assertAlmostEqual(
+            environment._subgoal_error_measure(remaining, command),
+            0.5,
+        )
+        environment.low_environment._terminal_pose_stage = "BASE_ROTATE"
+        self.assertAlmostEqual(
+            environment._subgoal_error_measure(remaining, command),
+            10.0,
+        )
+        environment.low_environment._terminal_pose_stage = "ARM_REACH"
+        self.assertAlmostEqual(
+            environment._subgoal_error_measure(remaining, command),
+            10.0,
+        )
 
     def test_rule_high_locks_detour_until_chassis_passes_obstacle(self):
         policy = RuleBasedHighPolicy()

@@ -27,6 +27,7 @@ from training.fused_box_detour import (
     box_student_arm_hold_required,
     compose_box_target_configuration,
     resolve_box_detour_side,
+    update_terminal_control_state,
     update_terminal_pose_latch,
 )
 from training.fused_low_training_env import FusedLowLevelTrainingEnv
@@ -214,6 +215,13 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
         self._terminal_pose_stage = "NONE"
         self._terminal_pose_stable_count = 0
         self._terminal_pose_aligned_latched = False
+        self._terminal_arm_stable_count = 0
+        self._terminal_arm_aligned_latched = False
+        self.terminal_arm_stable_cycles = int(
+            self._param_or_default("~terminal_arm_stable_cycles", 1)
+        )
+        if self.terminal_arm_stable_cycles <= 0:
+            raise ValueError("terminal_arm_stable_cycles must be positive")
         self._coordinated_arm_blend = 0.0
         self._arm_box_release_ready = False
         self._arm_box_release_margin = float(
@@ -256,6 +264,8 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
         self._terminal_pose_stage = "NONE"
         self._terminal_pose_stable_count = 0
         self._terminal_pose_aligned_latched = False
+        self._terminal_arm_stable_count = 0
+        self._terminal_arm_aligned_latched = False
         self._coordinated_arm_blend = 0.0
         self._arm_box_release_ready = False
         self._arm_finish_stall_cycles = 0
@@ -541,6 +551,8 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
         self._terminal_pose_stage = "NONE"
         self._terminal_pose_stable_count = 0
         self._terminal_pose_aligned_latched = False
+        self._terminal_arm_stable_count = 0
+        self._terminal_arm_aligned_latched = False
         if self.last_reset_info:
             self.last_reset_info["detour_side"] = float(selected)
             self.last_reset_info["box_path"] = new_path.metadata()
@@ -854,6 +866,7 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
         terminal_pose_aligned = self._update_joint_subgoal_terminal_pose(
             base_xy,
             base_yaw,
+            ee_distance,
         )
         # Keep the shared BoxDetourPath authoritative for HRL safe-waypoint
         # control as well as for the legacy staged controller.  Without this
@@ -907,6 +920,12 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
             "terminal_pose_stable_count": int(
                 self._terminal_pose_stable_count
             ),
+            "terminal_arm_stable_count": int(
+                self._terminal_arm_stable_count
+            ),
+            "terminal_arm_aligned": bool(
+                self._terminal_arm_aligned_latched
+            ),
             "action_mask_phase": "JOINT_SUBGOAL",
             "action_mask": np.ones(8, dtype=np.float32),
             "box_policy_action": raw_action.copy(),
@@ -918,24 +937,32 @@ class FusedBoxDetourTrainingEnv(FusedLowLevelTrainingEnv):
         })
         return observation, 0.0, done, info
 
-    def _update_joint_subgoal_terminal_pose(self, base_xy, base_yaw):
-        """Latch the final base pose without consulting legacy path index."""
+    def _update_joint_subgoal_terminal_pose(
+            self, base_xy, base_yaw, ee_distance):
+        """Advance BASE_TRANSLATE/BASE_ROTATE/ARM_REACH/ALIGNED."""
         position_error = self._path.final_position_error(base_xy)
         yaw_error = self._path.final_yaw_error(base_yaw)
         (
             self._terminal_pose_stage,
             self._terminal_pose_stable_count,
+            self._terminal_arm_stable_count,
             self._terminal_pose_aligned_latched,
-        ) = update_terminal_pose_latch(
+            self._terminal_arm_aligned_latched,
+        ) = update_terminal_control_state(
             self._terminal_pose_stage,
             self._terminal_pose_stable_count,
+            self._terminal_arm_stable_count,
             self._terminal_pose_aligned_latched,
+            self._terminal_arm_aligned_latched,
             position_error,
             yaw_error,
+            ee_distance,
             self.terminal_pose_enter_position_tolerance,
             self.terminal_pose_exit_position_tolerance,
             self.final_base_yaw_tolerance,
             self.terminal_pose_stable_cycles,
+            self.success_threshold,
+            self.terminal_arm_stable_cycles,
         )
         return bool(self._terminal_pose_aligned_latched)
 

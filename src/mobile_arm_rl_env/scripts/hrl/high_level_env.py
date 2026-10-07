@@ -216,6 +216,9 @@ class HighLevelEnv(object):
         option_termination = "horizon"
         option_stall_count = 0
         best_error_measure = float(start_error_measure)
+        option_control_stage = self._terminal_control_stage(command)
+        start_control_stage = str(option_control_stage)
+        option_stage_transitions = 0
         option_safety_history = []
         for _ in range(self.high_level_interval):
             sensor = self._sensor()
@@ -278,6 +281,17 @@ class HighLevelEnv(object):
             current_error_measure = self._subgoal_error_measure(
                 current_error, command
             )
+            current_control_stage = self._terminal_control_stage(command)
+            if current_control_stage != option_control_stage:
+                # Each deterministic TERMINAL substate has a different error
+                # coordinate.  Comparing ARM_REACH distance with the previous
+                # BASE_ROTATE yaw error creates false stalls exactly when the
+                # controller has made valid progress into a new phase.
+                option_control_stage = current_control_stage
+                option_stage_transitions += 1
+                best_error_measure = float(current_error_measure)
+                option_stall_count = 0
+                continue
             if (
                     best_error_measure - current_error_measure
                     >= self.option_minimum_progress):
@@ -348,13 +362,31 @@ class HighLevelEnv(object):
         self.last_option_duration = float(low_steps) / float(
             max(self.high_level_interval, 1)
         )
-        self.last_option_progress = float(np.clip(
-            (start_error_measure - self._subgoal_error_measure(
-                end_error, command
-            )) / max(start_error_measure, 1.0e-6),
-            -1.0,
-            1.0,
-        ))
+        end_error_measure = self._subgoal_error_measure(end_error, command)
+        if (
+                int(command.subgoal_type) == SubgoalType.TERMINAL
+                and start_control_stage != option_control_stage):
+            stage_rank = {
+                "BASE_TRANSLATE": 0,
+                "BASE_ROTATE": 1,
+                "ARM_REACH": 2,
+                "ALIGNED": 3,
+            }
+            self.last_option_progress = float(np.clip(
+                float(
+                    stage_rank.get(option_control_stage, 0)
+                    - stage_rank.get(start_control_stage, 0)
+                ) / 3.0,
+                -1.0,
+                1.0,
+            ))
+        else:
+            self.last_option_progress = float(np.clip(
+                (start_error_measure - end_error_measure)
+                / max(start_error_measure, 1.0e-6),
+                -1.0,
+                1.0,
+            ))
         self.last_option_safety_rate = float(safety_steps) / float(
             max(low_steps, 1)
         )
@@ -461,6 +493,10 @@ class HighLevelEnv(object):
             "subgoal_stable_count": int(subgoal_stable_count),
             "option_termination": str(option_termination),
             "option_stall_count": int(option_stall_count),
+            "terminal_control_stage": str(option_control_stage),
+            "terminal_control_stage_transitions": int(
+                option_stage_transitions
+            ),
             "option_progress": float(self.last_option_progress),
             "option_duration_fraction": float(self.last_option_duration),
             "option_safety_rate": float(self.last_option_safety_rate),
@@ -1066,19 +1102,47 @@ class HighLevelEnv(object):
         ], dtype=np.float32)
 
     def _subgoal_error_measure(self, remaining, command):
-        """Tolerance-normalized option error used for stall detection."""
+        """Tolerance-normalized, phase-causal option error.
+
+        TERMINAL deliberately freezes the arm during base translation and
+        rotation.  Its stall monitor must therefore observe only the state
+        variable that the active deterministic substate can change.
+        """
         remaining = np.asarray(remaining, dtype=np.float64)
-        components = [
+        if int(command.subgoal_type) == SubgoalType.TERMINAL:
+            stage = self._terminal_control_stage(command)
+            if stage == "BASE_TRANSLATE":
+                return float(np.linalg.norm(remaining[0:2])) / (
+                    self.base_subgoal_tolerance
+                )
+            if stage == "BASE_ROTATE":
+                return abs(float(remaining[2])) / (
+                    self.yaw_subgoal_tolerance
+                )
+            if stage in ("ARM_REACH", "ALIGNED"):
+                return float(np.linalg.norm(remaining[3:6])) / (
+                    self.ee_subgoal_tolerance
+                )
+        return float(max(
             float(np.linalg.norm(remaining[0:2]))
             / self.base_subgoal_tolerance,
             abs(float(remaining[2])) / self.yaw_subgoal_tolerance,
-        ]
-        if int(command.subgoal_type) == SubgoalType.TERMINAL:
-            components.append(
-                float(np.linalg.norm(remaining[3:6]))
-                / self.ee_subgoal_tolerance
-            )
-        return float(max(components))
+        ))
+
+    def _terminal_control_stage(self, command):
+        """Return the canonical deterministic substate for one option."""
+        if int(command.subgoal_type) != SubgoalType.TERMINAL:
+            return "NONE"
+        stage = str(getattr(
+            self.low_environment,
+            "_terminal_pose_stage",
+            "BASE_TRANSLATE",
+        ))
+        return {
+            "NONE": "BASE_TRANSLATE",
+            "TRANSLATE": "BASE_TRANSLATE",
+            "ROTATE": "BASE_ROTATE",
+        }.get(stage, stage)
 
     def _apply_route_decision(self, command):
         """Latch one DETOUR route option and synchronize the route reward."""

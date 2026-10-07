@@ -162,6 +162,17 @@ def main():
             args.checkpoint_interval,
         )
     )
+    print(
+        "basic_high_stage_policy_contract frozen={} feasibility_mask={} "
+        "terminal_ready=final_waypoint_or_path_complete "
+        "direct_escape_safety_rate={:.3f} "
+        "direct_escape_maximum_progress={:.3f}".format(
+            bool(args.freeze_stage_policy),
+            bool(args.stage_feasibility_mask),
+            args.direct_escape_safety_rate,
+            args.direct_escape_maximum_progress,
+        )
+    )
 
     model = FusedBasicHighActorCritic(
         hidden_sizes=args.hidden_sizes,
@@ -341,6 +352,7 @@ def main():
     rollout_terminal_alignment_sum = 0.0
     rollout_terminal_alignment_count = 0
     rollout_terminal_pose_stage_counts = collections.Counter()
+    rollout_stage_mask_counts = collections.Counter()
     reward_window = []
     start_time = time.time()
     best_gate = None
@@ -362,6 +374,7 @@ def main():
                     step_budget,
                     args.gate_episodes,
                     device,
+                    args=args,
                 )
                 print("basic_high_teacher_gate={}".format(teacher_gate))
                 if not _gate_pass(teacher_gate, args):
@@ -497,6 +510,7 @@ def main():
                     step_budget,
                     args.gate_episodes,
                     device,
+                    args=args,
                 )
                 print(
                     "basic_high_student_gate round={} metrics={}".format(
@@ -605,6 +619,7 @@ def main():
                     step_budget,
                     args.gate_episodes,
                     device,
+                    args=args,
                 )
                 print(
                     "basic_high_student_gate round=dagger_{} "
@@ -701,9 +716,17 @@ def main():
             observation_tensor = torch.from_numpy(normalized).to(
                 device
             ).unsqueeze(0)
+            stage_mask = _stage_feasibility_mask(
+                model, observation_tensor, args
+            )
+            _accumulate_stage_mask_counts(
+                rollout_stage_mask_counts, stage_mask
+            )
             with torch.no_grad():
                 action_tensor, stage_tensor, logp_tensor, value_tensor = (
-                    model.act(observation_tensor)
+                    model.act(
+                        observation_tensor, stage_mask=stage_mask
+                    )
                 )
             action = action_tensor.squeeze(0).cpu().numpy()
             stage = int(stage_tensor.item())
@@ -1169,6 +1192,7 @@ def main():
                 for name, value in reward_term_sums.items()
             )
             option_diagnostics = {
+                "stage_mask": dict(rollout_stage_mask_counts),
                 "requested_stages": dict(rollout_requested_stage_counts),
                 "executed_stages": dict(rollout_executed_stage_counts),
                 "terminations": dict(rollout_option_termination_counts),
@@ -1278,6 +1302,9 @@ def main():
                 "actor_updates_enabled": bool(
                     metrics["actor_updates_enabled"]
                 ),
+                "stage_policy_frozen": bool(
+                    metrics["stage_policy_frozen"]
+                ),
                 "critic_warmup_updates_remaining": int(
                     critic_warmup_updates_remaining
                 ),
@@ -1325,6 +1352,18 @@ def main():
                 ),
                 "policy_kl_threshold": float(
                     metrics["policy_kl_threshold"]
+                ),
+                "teacher_action_kl": float(
+                    metrics["teacher_action_kl"]
+                ),
+                "teacher_stage_kl": float(
+                    metrics["teacher_stage_kl"]
+                ),
+                "reference_action_kl": float(
+                    metrics["reference_action_kl"]
+                ),
+                "reference_stage_kl": float(
+                    metrics["reference_stage_kl"]
                 ),
                 "clip_fraction": float(metrics["clip_fraction"]),
                 "value_clip_fraction": float(
@@ -1428,6 +1467,7 @@ def main():
             rollout_terminal_alignment_sum = 0.0
             rollout_terminal_alignment_count = 0
             rollout_terminal_pose_stage_counts.clear()
+            rollout_stage_mask_counts.clear()
             if (
                     args.checkpoint_interval > 0
                     and update_index % args.checkpoint_interval == 0):
@@ -1457,6 +1497,7 @@ def main():
                     step_budget,
                     args.selection_episodes,
                     device,
+                    args=args,
                 )
                 print(
                     "basic_high_selection update={} terminal_blend={} "
@@ -1616,6 +1657,7 @@ def main():
             step_budget,
             args.selection_episodes,
             device,
+            args=args,
         )
         print(
             "basic_high_final_selection terminal_blend={} gate={}".format(
@@ -1693,7 +1735,8 @@ def _evaluate_policy(
         sampler,
         default_budget,
         episodes,
-        device):
+        device,
+        args=None):
     counts = collections.Counter()
     final_distances = []
     requested_stage_counts = collections.Counter()
@@ -1713,6 +1756,7 @@ def _evaluate_policy(
     terminal_student_alignment_count = 0
     terminal_executed_alignment_sum = 0.0
     terminal_executed_alignment_count = 0
+    stage_mask_counts = collections.Counter()
     for unused_episode in range(int(episodes)):
         observation, scenario = _reset(client, sampler, default_budget)
         done = False
@@ -1747,10 +1791,23 @@ def _evaluate_policy(
             else:
                 normalized = normalizer.normalize(observation)
                 tensor = torch.from_numpy(normalized).to(device).unsqueeze(0)
+                stage_mask = _stage_feasibility_mask(
+                    model, tensor, args
+                )
+                _accumulate_stage_mask_counts(
+                    stage_mask_counts, stage_mask
+                )
                 with torch.no_grad():
-                    action_tensor, stage_tensor = (
-                        model.deterministic_decision(tensor)
-                    )
+                    if stage_mask is None:
+                        action_tensor, stage_tensor = (
+                            model.deterministic_decision(tensor)
+                        )
+                    else:
+                        action_tensor, stage_tensor = (
+                            model.deterministic_decision(
+                                tensor, stage_mask=stage_mask
+                            )
+                        )
                 action = action_tensor.squeeze(0).cpu().numpy()
                 stage = int(stage_tensor.item())
             last_stage = int(stage)
@@ -1963,6 +2020,7 @@ def _evaluate_policy(
         "collisions": int(counts["collisions"]),
         "timeouts": int(counts["timeouts"]),
         "mean_final_distance": float(np.mean(final_distances)),
+        "stage_mask_counts": dict(stage_mask_counts),
         "high_steps": int(counts["high_steps"]),
         "low_steps": int(counts["low_steps"]),
         "mean_low_steps_per_high": float(counts["low_steps"])
@@ -3368,7 +3426,13 @@ def _ppo_update(
     value_rmse_before = float(torch.sqrt(torch.mean(
         (values_before - value_targets).pow(2)
     )).item())
-    actor_parameters = _actor_parameters(model)
+    freeze_stage_policy = bool(getattr(
+        args, "freeze_stage_policy", False
+    ))
+    actor_parameters = _actor_parameters(
+        model, freeze_stage_policy=freeze_stage_policy
+    )
+    stage_policy_parameters = _stage_policy_parameters(model)
     critic_parameters = _critic_parameters(model)
     actor_totals = collections.Counter()
     critic_totals = collections.Counter()
@@ -3417,9 +3481,15 @@ def _ppo_update(
             )
             old_logp = data["old_log_probabilities"].index_select(0, indices)
             batch_advantages = data["advantages"].index_select(0, indices)
+            stage_mask = _stage_feasibility_mask(
+                model, observations, args
+            )
             logp, entropy, unused_values, mean_action, stage_logits = (
                 model.evaluate_actions(
-                    observations, actions, selected_stages
+                    observations,
+                    actions,
+                    selected_stages,
+                    stage_mask=stage_mask,
                 )
             )
             log_ratio = logp - old_logp
@@ -3486,6 +3556,8 @@ def _ppo_update(
             optimizer.zero_grad()
             actor_loss.backward()
             _clear_parameter_gradients(critic_parameters)
+            if freeze_stage_policy:
+                _clear_parameter_gradients(stage_policy_parameters)
             actor_grad_norm = _parameter_gradient_norm(actor_parameters)
             torch.nn.utils.clip_grad_norm_(
                 actor_parameters, args.maximum_gradient_norm
@@ -3538,6 +3610,7 @@ def _ppo_update(
                 stages,
                 data["old_log_probabilities"],
                 args.batch_size,
+                args=args,
             )
             policy_kl_minibatch_values.append(rollout_policy_kl)
             policy_kl_max = max(policy_kl_max, rollout_policy_kl)
@@ -3626,6 +3699,7 @@ def _ppo_update(
         stages,
         data["old_log_probabilities"],
         args.batch_size,
+        args=args,
     )
     policy_kl_max = max(policy_kl_max, final_policy_kl)
     metrics["policy_kl"] = float(final_policy_kl)
@@ -3733,6 +3807,7 @@ def _ppo_update(
         critic_minibatches_completed
     ) / float(max(critic_minibatches_expected, 1))
     metrics["actor_updates_enabled"] = float(actor_updates_enabled)
+    metrics["stage_policy_frozen"] = float(freeze_stage_policy)
     metrics["actor_learning_rate"] = _optimizer_learning_rate(optimizer)
     metrics["critic_learning_rate"] = _optimizer_learning_rate(
         critic_optimizer
@@ -3772,7 +3847,8 @@ def _full_rollout_policy_kl(
         actions,
         stages,
         old_log_probabilities,
-        batch_size):
+        batch_size,
+        args=None):
     """Measure the current-vs-rollout policy KL on every rollout sample."""
     total = 0.0
     count = 0
@@ -3780,11 +3856,16 @@ def _full_rollout_policy_kl(
     with torch.no_grad():
         for start in range(0, int(observations.shape[0]), batch_size):
             stop = min(start + batch_size, int(observations.shape[0]))
+            batch_observations = observations[start:stop]
+            stage_mask = _stage_feasibility_mask(
+                model, batch_observations, args
+            )
             logp, unused_entropy, unused_values, unused_mean, unused_logits = (
                 model.evaluate_actions(
-                    observations[start:stop],
+                    batch_observations,
                     actions[start:stop],
                     stages[start:stop],
+                    stage_mask=stage_mask,
                 )
             )
             log_ratio = logp - old_log_probabilities[start:stop]
@@ -3836,14 +3917,48 @@ def _balanced_ppo_minibatch_indices(size, batch_size):
             yield indices
 
 
-def _actor_parameters(model):
-    """Return policy parameters while excluding the value function."""
+def _stage_feasibility_mask(model, observations, args):
+    """Rebuild the categorical action mask from Markov observations."""
+    if args is None or not bool(getattr(
+            args, "stage_feasibility_mask", False)):
+        return None
+    return model.stage_feasibility_mask(
+        observations,
+        direct_safety_rate_threshold=float(getattr(
+            args, "direct_escape_safety_rate", 0.80
+        )),
+        direct_maximum_progress=float(getattr(
+            args, "direct_escape_maximum_progress", 0.05
+        )),
+    )
+
+
+def _accumulate_stage_mask_counts(counts, stage_mask):
+    """Record how often feasibility logic removes each semantic stage."""
+    if stage_mask is None:
+        return
+    unavailable = (~stage_mask).sum(dim=0).detach().cpu().tolist()
+    for stage, count in enumerate(unavailable):
+        if int(count) > 0:
+            counts["{}_blocked".format(_stage_name(stage))] += int(count)
+
+
+def _stage_policy_parameters(model):
+    """Return the shared stage features and categorical stage head."""
     return (
         list(model.actor_backbone.parameters())
-        + list(model.actor_mean.parameters())
         + list(model.stage_head.parameters())
-        + [model.log_std]
     )
+
+
+def _actor_parameters(model, freeze_stage_policy=False):
+    """Return the policy parameters updated by the PPO actor phase."""
+    continuous_parameters = list(model.actor_mean.parameters()) + [
+        model.log_std
+    ]
+    if freeze_stage_policy:
+        return continuous_parameters
+    return _stage_policy_parameters(model) + continuous_parameters
 
 
 def _critic_parameters(model):
@@ -4205,6 +4320,25 @@ def _save_checkpoint(
             "numbered_selection_interval": int(args.checkpoint_interval),
             "recovery_path": _recovery_checkpoint_path(args.output),
         },
+        "stage_feasibility_contract": {
+            "enabled": bool(getattr(
+                args, "stage_feasibility_mask", False
+            )),
+            "freeze_stage_policy": bool(getattr(
+                args, "freeze_stage_policy", False
+            )),
+            "terminal_rule": "final_waypoint_active_or_path_complete",
+            "direct_escape_rule": (
+                "obstacle_path_and_previous_direct_and_"
+                "stalled_or_high_safety_low_progress"
+            ),
+            "direct_escape_safety_rate": float(getattr(
+                args, "direct_escape_safety_rate", 0.80
+            )),
+            "direct_escape_maximum_progress": float(getattr(
+                args, "direct_escape_maximum_progress", 0.05
+            )),
+        },
         "terminal_blend_curriculum": copy.deepcopy(
             terminal_blend_curriculum
             if terminal_blend_curriculum is not None
@@ -4212,7 +4346,7 @@ def _save_checkpoint(
         ),
         "environment_metadata": dict(environment_metadata),
         "training_contract": (
-            "markov_kl_dagger_two_layer_smdp_ppo_terminal_blend_annealing_v10"
+            "markov_two_layer_smdp_ppo_stage_protected_terminal_fsm_v11"
         ),
         "discount_contract": {
             "mode": str(getattr(args, "discount_mode", "high_step")),
@@ -4684,6 +4818,41 @@ def _parse_arguments():
             "and TERMINAL so the long terminal phase cannot set the scale"
         ),
     )
+    parser.add_argument(
+        "--freeze-stage-policy",
+        action="store_true",
+        help=(
+            "preserve the initialized actor backbone and stage head during "
+            "PPO; only stage-conditioned continuous heads and exploration "
+            "variance are updated by the actor phase"
+        ),
+    )
+    parser.add_argument(
+        "--stage-feasibility-mask",
+        action="store_true",
+        help=(
+            "mask premature TERMINAL decisions and force DETOUR after a "
+            "failed DIRECT option on obstacle paths"
+        ),
+    )
+    parser.add_argument(
+        "--direct-escape-safety-rate",
+        type=float,
+        default=0.80,
+        help=(
+            "DIRECT safety-rate threshold used with low progress by the "
+            "one-decision escape mask"
+        ),
+    )
+    parser.add_argument(
+        "--direct-escape-maximum-progress",
+        type=float,
+        default=0.05,
+        help=(
+            "largest DIRECT progress still considered failed when its "
+            "safety rate exceeds the escape threshold"
+        ),
+    )
     parser.add_argument("--update-normalizer", action="store_true")
     parser.add_argument("--seed", type=int, default=789)
     parser.add_argument("--cpu", action="store_true")
@@ -4764,6 +4933,12 @@ def _parse_arguments():
         )
     if args.value_clip_range is not None and args.value_clip_range < 0.0:
         parser.error("--value-clip-range must be non-negative")
+    if not 0.0 <= args.direct_escape_safety_rate <= 1.0:
+        parser.error("--direct-escape-safety-rate must be in [0, 1]")
+    if args.direct_escape_maximum_progress < 0.0:
+        parser.error(
+            "--direct-escape-maximum-progress must be non-negative"
+        )
     if (
             args.teacher_episodes <= 0
             or args.teacher_max_attempts < args.teacher_episodes

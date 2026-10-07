@@ -28,6 +28,21 @@ class FusedBasicHighActorCritic(nn.Module):
     NORMALIZED_DIM = 35
     POLICY_TYPE = "fused_basic_two_layer_ppo_v2"
 
+    # Markov stage-feasibility inputs in the fixed 86-D observation.  These
+    # entries sit beyond NORMALIZED_DIM, so their Boolean/rate semantics are
+    # preserved by RunningObservationNormalizer.
+    PREVIOUS_STAGE_START = 35
+    LAST_OPTION_PROGRESS_INDEX = 39
+    LAST_OPTION_SAFETY_RATE_INDEX = 40
+    LAST_OPTION_STALLED_INDEX = 41
+    FINAL_WAYPOINT_ACTIVE_INDEX = 47
+    PATH_COMPLETE_INDEX = 48
+    DIRECT_PATH_INDEX = 49
+
+    DIRECT_STAGE = 0
+    DETOUR_STAGE = 1
+    TERMINAL_STAGE = 2
+
     def __init__(self, hidden_sizes=(256, 256), initial_log_std=-2.5):
         super(FusedBasicHighActorCritic, self).__init__()
         self.actor_backbone = self._make_backbone(hidden_sizes)
@@ -43,8 +58,9 @@ class FusedBasicHighActorCritic(nn.Module):
         ))
         self._initialize()
 
-    def act(self, observations, deterministic=False):
+    def act(self, observations, deterministic=False, stage_mask=None):
         all_means, stage_logits, values = self._outputs(observations)
+        stage_logits = self._masked_stage_logits(stage_logits, stage_mask)
         stage_distribution = Categorical(logits=stage_logits)
         stage = (
             torch.argmax(stage_logits, dim=-1)
@@ -61,8 +77,10 @@ class FusedBasicHighActorCritic(nn.Module):
         ) + stage_distribution.log_prob(stage)
         return action, stage, log_probability, values
 
-    def evaluate_actions(self, observations, actions, stages):
+    def evaluate_actions(
+            self, observations, actions, stages, stage_mask=None):
         all_means, stage_logits, values = self._outputs(observations)
+        stage_logits = self._masked_stage_logits(stage_logits, stage_mask)
         stages = stages.long()
         mean = self._select_stage_means(all_means, stages)
         action_distribution = self._distribution(mean)
@@ -86,8 +104,9 @@ class FusedBasicHighActorCritic(nn.Module):
             stage_logits,
         )
 
-    def deterministic_decision(self, observations):
+    def deterministic_decision(self, observations, stage_mask=None):
         all_means, stage_logits, unused_values = self._outputs(observations)
+        stage_logits = self._masked_stage_logits(stage_logits, stage_mask)
         stages = torch.argmax(stage_logits, dim=-1)
         actions = torch.tanh(
             self._select_stage_means(all_means, stages)
@@ -105,6 +124,58 @@ class FusedBasicHighActorCritic(nn.Module):
     def get_value(self, observations):
         features = self.critic_backbone(observations)
         return self.critic(features).squeeze(-1)
+
+    @classmethod
+    def stage_feasibility_mask(
+            cls,
+            observations,
+            direct_safety_rate_threshold=0.80,
+            direct_maximum_progress=0.05):
+        """Return feasible DIRECT/DETOUR/TERMINAL stages per observation.
+
+        TERMINAL is legal only after the final navigation waypoint becomes
+        active (or the path is already complete).  On an obstacle path, a
+        failed DIRECT option is blocked for the next high-level decision so
+        DETOUR can break the recurrent DIRECT safety-risk trap.  DETOUR is
+        deliberately always available, which also guarantees at least one
+        feasible categorical action.
+        """
+        if observations.ndim != 2 or observations.shape[1] != cls.OBS_DIM:
+            raise ValueError(
+                "stage feasibility expects [batch, {}] observations".format(
+                    cls.OBS_DIM
+                )
+            )
+        mask = torch.ones(
+            (observations.shape[0], cls.STAGE_COUNT),
+            dtype=torch.bool,
+            device=observations.device,
+        )
+        terminal_ready = (
+            observations[:, cls.FINAL_WAYPOINT_ACTIVE_INDEX] > 0.5
+        ) | (
+            observations[:, cls.PATH_COMPLETE_INDEX] > 0.5
+        )
+        mask[:, cls.TERMINAL_STAGE] = terminal_ready
+
+        previous_direct = (
+            observations[:, cls.PREVIOUS_STAGE_START + cls.DIRECT_STAGE]
+            > 0.5
+        )
+        obstacle_path = observations[:, cls.DIRECT_PATH_INDEX] < 0.5
+        stalled = observations[:, cls.LAST_OPTION_STALLED_INDEX] > 0.5
+        safety_blocked = (
+            observations[:, cls.LAST_OPTION_SAFETY_RATE_INDEX]
+            >= float(direct_safety_rate_threshold)
+        ) & (
+            observations[:, cls.LAST_OPTION_PROGRESS_INDEX]
+            <= float(direct_maximum_progress)
+        )
+        direct_failed = previous_direct & obstacle_path & (
+            stalled | safety_blocked
+        )
+        mask[:, cls.DIRECT_STAGE] = ~direct_failed
+        return mask
 
     def teacher_kl(
             self,
@@ -226,6 +297,19 @@ class FusedBasicHighActorCritic(nn.Module):
     def _select_stage_means(all_means, stages):
         batch = torch.arange(all_means.shape[0], device=all_means.device)
         return all_means[batch, stages.long()]
+
+    @classmethod
+    def _masked_stage_logits(cls, stage_logits, stage_mask):
+        if stage_mask is None:
+            return stage_logits
+        if tuple(stage_mask.shape) != tuple(stage_logits.shape):
+            raise ValueError("stage mask must match stage-logit shape")
+        stage_mask = stage_mask.to(
+            device=stage_logits.device, dtype=torch.bool
+        )
+        if bool(torch.any(~torch.any(stage_mask, dim=-1))):
+            raise ValueError("every observation needs a feasible stage")
+        return stage_logits.masked_fill(~stage_mask, -1.0e9)
 
     @staticmethod
     def _log_probability(distribution, raw_action, action):

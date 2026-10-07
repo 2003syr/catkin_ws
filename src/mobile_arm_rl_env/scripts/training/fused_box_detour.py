@@ -137,6 +137,103 @@ def update_terminal_pose_latch(
     return stage, stable_count, aligned_latched
 
 
+def update_terminal_control_state(
+        stage,
+        pose_stable_count,
+        arm_stable_count,
+        pose_aligned_latched,
+        arm_aligned_latched,
+        position_error,
+        yaw_error,
+        ee_distance,
+        enter_position_tolerance,
+        exit_position_tolerance,
+        yaw_tolerance,
+        pose_stable_cycles,
+        ee_tolerance,
+        arm_stable_cycles=1):
+    """Advance the deterministic TERMINAL controller state.
+
+    The base and arm completion latches are deliberately separate.  Reaching
+    the final base pose releases ``ARM_REACH`` but does not claim that the
+    complete mobile-manipulation task is aligned.  Once the base latch is set
+    it is never reopened by small Gazebo drift, so the arm can finish against
+    a stationary chassis.
+    """
+    stage = str(stage)
+    pose_stable_count = int(pose_stable_count)
+    arm_stable_count = int(arm_stable_count)
+    pose_aligned_latched = bool(pose_aligned_latched)
+    arm_aligned_latched = bool(arm_aligned_latched)
+    if int(pose_stable_cycles) <= 0 or int(arm_stable_cycles) <= 0:
+        raise ValueError("terminal stable cycles must be positive")
+    if float(ee_tolerance) <= 0.0:
+        raise ValueError("terminal EE tolerance must be positive")
+
+    if arm_aligned_latched:
+        return (
+            "ALIGNED",
+            pose_stable_count,
+            arm_stable_count,
+            True,
+            True,
+        )
+
+    if pose_aligned_latched:
+        stage = "ARM_REACH"
+        if float(ee_distance) <= float(ee_tolerance):
+            arm_stable_count += 1
+            if arm_stable_count >= int(arm_stable_cycles):
+                stage = "ALIGNED"
+                arm_aligned_latched = True
+        else:
+            arm_stable_count = 0
+        return (
+            stage,
+            pose_stable_count,
+            arm_stable_count,
+            True,
+            arm_aligned_latched,
+        )
+
+    legacy_stage = {
+        "BASE_TRANSLATE": "TRANSLATE",
+        "BASE_ROTATE": "ROTATE",
+    }.get(stage, stage)
+    (
+        pose_stage,
+        pose_stable_count,
+        pose_aligned_latched,
+    ) = update_terminal_pose_latch(
+        legacy_stage,
+        pose_stable_count,
+        pose_aligned_latched,
+        position_error,
+        yaw_error,
+        enter_position_tolerance,
+        exit_position_tolerance,
+        yaw_tolerance,
+        pose_stable_cycles,
+    )
+    stage = {
+        "TRANSLATE": "BASE_TRANSLATE",
+        "ROTATE": "BASE_ROTATE",
+        "ALIGNED": "ARM_REACH",
+    }.get(pose_stage, pose_stage)
+    if pose_aligned_latched:
+        # Evaluate the arm on the next low-level sample.  This guarantees that
+        # ARM_REACH is an observable state rather than an instantaneous alias
+        # for ALIGNED when the EE happens to start inside its tolerance.
+        arm_stable_count = 0
+    return (
+        stage,
+        pose_stable_count,
+        arm_stable_count,
+        pose_aligned_latched,
+        arm_aligned_latched,
+    )
+
+
 def box_reward_progress(
         previous_path_remaining,
         path_remaining,

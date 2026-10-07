@@ -87,6 +87,40 @@ def main():
         normalizer.load_state_dict(checkpoint["normalizer"])
         model.eval()
 
+    stage_contract = (
+        {} if checkpoint is None
+        else checkpoint.get("stage_feasibility_contract", {})
+    )
+    stage_mask_enabled = bool(
+        False
+        if args.teacher_policy
+        else (
+            stage_contract.get("enabled", False)
+            if args.stage_feasibility_mask is None
+            else args.stage_feasibility_mask
+        )
+    )
+    direct_escape_safety_rate = float(
+        stage_contract.get("direct_escape_safety_rate", 0.80)
+        if args.direct_escape_safety_rate is None
+        else args.direct_escape_safety_rate
+    )
+    direct_escape_maximum_progress = float(
+        stage_contract.get("direct_escape_maximum_progress", 0.05)
+        if args.direct_escape_maximum_progress is None
+        else args.direct_escape_maximum_progress
+    )
+    print(
+        "basic_high_stage_policy_contract feasibility_mask={} "
+        "stage_policy_frozen={} direct_escape_safety_rate={:.3f} "
+        "direct_escape_maximum_progress={:.3f}".format(
+            stage_mask_enabled,
+            bool(stage_contract.get("freeze_stage_policy", False)),
+            direct_escape_safety_rate,
+            direct_escape_maximum_progress,
+        )
+    )
+
     client = FusedBasicHighEnvironmentClient(
         host=args.host, port=args.port, timeout=args.socket_timeout
     )
@@ -133,6 +167,7 @@ def main():
     terminal_alignment_sum = 0.0
     terminal_alignment_count = 0
     terminal_pose_stage_counts = collections.Counter()
+    stage_mask_counts = collections.Counter()
     try:
         for episode_index in range(len(scenarios)):
             scenario = sampler.next()
@@ -174,9 +209,32 @@ def main():
                 else:
                     normalized = normalizer.normalize(observation)
                     tensor = torch.from_numpy(normalized).to(device).unsqueeze(0)
+                    stage_mask = None
+                    if stage_mask_enabled:
+                        stage_mask = model.stage_feasibility_mask(
+                            tensor,
+                            direct_safety_rate_threshold=(
+                                direct_escape_safety_rate
+                            ),
+                            direct_maximum_progress=(
+                                direct_escape_maximum_progress
+                            ),
+                        )
+                        unavailable = (
+                            (~stage_mask).sum(dim=0).detach().cpu().tolist()
+                        )
+                        for stage_index, count in enumerate(unavailable):
+                            if int(count) > 0:
+                                stage_mask_counts[
+                                    "{}_blocked".format(
+                                        _stage_name(stage_index)
+                                    )
+                                ] += int(count)
                     with torch.no_grad():
                         action_tensor, stage_tensor = (
-                            model.deterministic_decision(tensor)
+                            model.deterministic_decision(
+                                tensor, stage_mask=stage_mask
+                            )
                         )
                     action = action_tensor.squeeze(0).cpu().numpy()
                     stage = int(stage_tensor.item())
@@ -462,6 +520,8 @@ def main():
         client.close()
 
     metrics = {
+        "stage_feasibility_mask": bool(stage_mask_enabled),
+        "stage_mask_counts": dict(stage_mask_counts),
         "terminal_student_blend": (
             None if evaluation_blend is None else float(evaluation_blend)
         ),
@@ -652,6 +712,26 @@ def _parse_arguments():
             "omitted, use the checkpoint curriculum stage or server default"
         ),
     )
+    stage_mask_group = parser.add_mutually_exclusive_group()
+    stage_mask_group.add_argument(
+        "--stage-feasibility-mask",
+        dest="stage_feasibility_mask",
+        action="store_true",
+        help="enable the checkpoint-compatible semantic stage mask",
+    )
+    stage_mask_group.add_argument(
+        "--no-stage-feasibility-mask",
+        dest="stage_feasibility_mask",
+        action="store_false",
+        help="disable the semantic stage mask stored in the checkpoint",
+    )
+    parser.set_defaults(stage_feasibility_mask=None)
+    parser.add_argument(
+        "--direct-escape-safety-rate", type=float, default=None
+    )
+    parser.add_argument(
+        "--direct-escape-maximum-progress", type=float, default=None
+    )
     parser.add_argument("--metrics-output")
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
@@ -661,6 +741,16 @@ def _parse_arguments():
             args.terminal_student_blend is not None
             and not 0.0 <= args.terminal_student_blend <= 1.0):
         parser.error("--terminal-student-blend must be in [0, 1]")
+    if (
+            args.direct_escape_safety_rate is not None
+            and not 0.0 <= args.direct_escape_safety_rate <= 1.0):
+        parser.error("--direct-escape-safety-rate must be in [0, 1]")
+    if (
+            args.direct_escape_maximum_progress is not None
+            and args.direct_escape_maximum_progress < 0.0):
+        parser.error(
+            "--direct-escape-maximum-progress must be non-negative"
+        )
     return args
 
 
