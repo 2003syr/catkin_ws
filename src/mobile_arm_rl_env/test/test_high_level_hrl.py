@@ -31,6 +31,7 @@ from hrl.low_level_wrapper import (
     ZeroFusedResidualPolicy,
 )
 from hrl.rule_high_policy import RuleBasedHighPolicy, SafeWaypointHighPolicy
+from hrl.rule_based_planar_subgoal import project_path_corridor_subgoal
 from hrl.subgoal_converter import SubgoalConverter
 from training.fused_box_detour import (
     update_terminal_control_state,
@@ -157,7 +158,96 @@ class FakeLowEnvironment(object):
         }
 
 
+class StuckRotateEnvironment(FakeLowEnvironment):
+
+    def step_joint_subgoal(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        self.steps += 1
+        self.last_sensor_observation[11] += 0.01 * action[0]
+        self.last_sensor_observation[6:9] += 0.01 * action[2:5]
+        return np.zeros(66), 0.0, False, {
+            "success": False,
+            "collision": False,
+            "timeout": False,
+            "safe_fused_action": action.copy(),
+        }
+
+
 class HighLevelHrlTest(unittest.TestCase):
+
+    def test_path_corridor_projection_limits_corner_cutting(self):
+        projected, diagnostics = project_path_corridor_subgoal(
+            requested_body_xy=[-0.20, 0.30],
+            waypoint_body_xy=[0.50, 0.0],
+            maximum_radius=0.50,
+            corridor_half_width=0.08,
+            minimum_progress=0.05,
+        )
+        np.testing.assert_allclose(projected, [0.05, 0.08], atol=1.0e-6)
+        self.assertTrue(diagnostics["applied"])
+        self.assertLess(diagnostics["requested_along"], 0.0)
+        self.assertAlmostEqual(diagnostics["executed_along"], 0.05)
+
+    def test_detour_guard_projects_only_executable_path_corridor(self):
+        low_environment = FakeLowEnvironment()
+        wrapper = JointSubgoalLowLevelWrapper(SubgoalEchoPolicy())
+        environment = HighLevelEnv(
+            low_environment,
+            wrapper,
+            high_level_interval=1,
+            enable_route_options=False,
+            detour_feasibility_guard=True,
+        )
+        environment.reset()
+        command = JointHighLevelCommand(
+            base_goal=[-0.20, 0.30, 0.0],
+            ee_goal=[0.0, 0.0, 0.0],
+            subgoal_type=SubgoalType.DETOUR,
+        )
+        unused_observation, unused_reward, unused_done, info = (
+            environment.step(command)
+        )
+        self.assertTrue(info["detour_guard_applied"])
+        self.assertTrue(info["detour_guard_corridor_feasible"])
+        self.assertGreater(info["detour_guard_projection"], 0.0)
+        np.testing.assert_allclose(
+            info["routed_high_command"][0:2],
+            [0.05, 0.08],
+            atol=1.0e-6,
+        )
+
+    def test_terminal_rotation_recovery_reports_no_progress(self):
+        low_environment = StuckRotateEnvironment()
+        wrapper = JointSubgoalLowLevelWrapper(SubgoalEchoPolicy())
+        environment = HighLevelEnv(
+            low_environment,
+            wrapper,
+            high_level_interval=10,
+            enable_route_options=False,
+            terminal_option_contract=True,
+            option_stall_steps=0,
+            terminal_rotate_recovery_steps=2,
+            terminal_rotate_stall_steps=4,
+        )
+        environment.reset()
+        low_environment._path.final_waypoint_active = True
+        low_environment._path.goal_yaw += 0.50
+        low_environment._terminal_pose_stage = "ROTATE"
+        command = JointHighLevelCommand(
+            base_goal=[0.0, 0.0, 0.0],
+            ee_goal=[0.0, 0.0, 0.0],
+            subgoal_type=SubgoalType.TERMINAL,
+        )
+        unused_observation, unused_reward, unused_done, info = (
+            environment.step(command)
+        )
+        self.assertEqual(info["option_termination"], "rotate_stalled")
+        self.assertEqual(info["low_steps"], 4)
+        self.assertEqual(info["terminal_rotate_steps"], 4)
+        self.assertEqual(info["terminal_rotate_recovery_steps"], 2)
+        self.assertEqual(info["terminal_rotate_stall_events"], 1)
+        self.assertEqual(info["terminal_rotate_no_progress_streak"], 4)
+        self.assertAlmostEqual(info["terminal_rotate_progress"], 0.0)
 
     def test_joint_command_normalized_round_trip(self):
         action = np.asarray(

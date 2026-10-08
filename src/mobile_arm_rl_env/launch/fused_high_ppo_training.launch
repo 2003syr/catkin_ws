@@ -35,6 +35,15 @@
     <arg name="terminal_option_contract" default="false" />
     <arg name="terminal_ee_step" default="0.08" />
     <arg name="terminal_student_blend" default="0.25" />
+    <arg name="terminal_rotate_minimum_action" default="0.20" />
+    <arg name="terminal_rotate_recovery_action" default="0.80" />
+    <arg name="terminal_rotate_progress_epsilon" default="0.001" />
+    <arg name="terminal_rotate_recovery_steps" default="8" />
+    <arg name="terminal_rotate_stall_steps" default="20" />
+    <arg name="detour_feasibility_guard" default="false" />
+    <arg name="detour_corridor_half_width" default="0.08" />
+    <arg name="detour_minimum_progress" default="0.05" />
+    <arg name="detour_clearance_margin" default="0.04" />
 
     <include file="$(find mobile_arm_description)/launch/gazebo_planar_avoidance.launch">
         <arg name="gui" value="$(arg gui)" />
@@ -149,6 +158,24 @@
         <param name="terminal_ee_step" value="$(arg terminal_ee_step)" />
         <param name="terminal_student_blend"
                value="$(arg terminal_student_blend)" />
+        <param name="terminal_rotate_minimum_action"
+               value="$(arg terminal_rotate_minimum_action)" />
+        <param name="terminal_rotate_recovery_action"
+               value="$(arg terminal_rotate_recovery_action)" />
+        <param name="terminal_rotate_progress_epsilon"
+               value="$(arg terminal_rotate_progress_epsilon)" />
+        <param name="terminal_rotate_recovery_steps"
+               value="$(arg terminal_rotate_recovery_steps)" />
+        <param name="terminal_rotate_stall_steps"
+               value="$(arg terminal_rotate_stall_steps)" />
+        <param name="detour_feasibility_guard"
+               value="$(arg detour_feasibility_guard)" />
+        <param name="detour_corridor_half_width"
+               value="$(arg detour_corridor_half_width)" />
+        <param name="detour_minimum_progress"
+               value="$(arg detour_minimum_progress)" />
+        <param name="detour_clearance_margin"
+               value="$(arg detour_clearance_margin)" />
         <param name="high_teacher_base_step" value="0.30" />
         <param name="high_teacher_ee_step" value="0.08" />
 

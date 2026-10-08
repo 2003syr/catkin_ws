@@ -47,6 +47,7 @@ from training.ppo_rollout import PPORolloutBuffer  # noqa: E402
 
 
 DAGGER_STAGE_NAMES = ("DIRECT", "DETOUR", "TERMINAL")
+DETOUR_STAGE = 1
 TERMINAL_STAGE = 2
 ARM_SUBGOAL_SLICE = slice(3, 6)
 
@@ -352,6 +353,8 @@ def main():
     rollout_terminal_alignment_sum = 0.0
     rollout_terminal_alignment_count = 0
     rollout_terminal_pose_stage_counts = collections.Counter()
+    rollout_detour_guard_counts = collections.Counter()
+    rollout_terminal_rotate_max_streak = 0
     rollout_stage_mask_counts = collections.Counter()
     reward_window = []
     start_time = time.time()
@@ -709,6 +712,9 @@ def main():
         episode_terminal_fallbacks = 0
         episode_terminal_norm_clips = 0
         episode_invalid_terminal = 0
+        episode_detour_guard_counts = collections.Counter()
+        episode_terminal_rotate_counts = collections.Counter()
+        episode_terminal_rotate_max_streak = 0
         while total_steps < args.total_steps or buffer.size > 0:
             if args.update_normalizer:
                 normalizer.update(observation)
@@ -846,7 +852,69 @@ def main():
             )
             terminal_contract_counts["stalled"] += int(
                 option_termination
-                in ("stalled", "safety_risk")
+                in ("stalled", "safety_risk", "rotate_stalled")
+            )
+            detour_guard_applied = bool(info.get(
+                "detour_guard_applied", False
+            ))
+            detour_guard_projection = float(info.get(
+                "detour_guard_projection", 0.0
+            ))
+            detour_corridor_feasible = bool(info.get(
+                "detour_guard_corridor_feasible", True
+            ))
+            if executed_stage == DETOUR_STAGE:
+                rollout_detour_guard_counts["options"] += 1
+                episode_detour_guard_counts["options"] += 1
+                rollout_detour_guard_counts["applied"] += int(
+                    detour_guard_applied
+                )
+                episode_detour_guard_counts["applied"] += int(
+                    detour_guard_applied
+                )
+                rollout_detour_guard_counts["infeasible"] += int(
+                    not detour_corridor_feasible
+                )
+                episode_detour_guard_counts["infeasible"] += int(
+                    not detour_corridor_feasible
+                )
+                rollout_detour_guard_counts[
+                    "projection_sum"
+                ] += detour_guard_projection
+                episode_detour_guard_counts[
+                    "projection_sum"
+                ] += detour_guard_projection
+            for rotate_name in (
+                    "steps",
+                    "guarded_steps",
+                    "recovery_steps",
+                    "blocked_steps",
+                    "wrong_direction_steps",
+                    "stall_events"):
+                rotate_value = int(info.get(
+                    "terminal_rotate_{}".format(rotate_name), 0
+                ))
+                terminal_contract_counts[
+                    "rotate_{}".format(rotate_name)
+                ] += rotate_value
+                episode_terminal_rotate_counts[rotate_name] += rotate_value
+            rotate_progress = float(info.get(
+                "terminal_rotate_progress", 0.0
+            ))
+            terminal_contract_counts[
+                "rotate_progress_sum"
+            ] += rotate_progress
+            episode_terminal_rotate_counts[
+                "progress_sum"
+            ] += rotate_progress
+            rotate_streak = int(info.get(
+                "terminal_rotate_no_progress_streak", 0
+            ))
+            rollout_terminal_rotate_max_streak = max(
+                rollout_terminal_rotate_max_streak, rotate_streak
+            )
+            episode_terminal_rotate_max_streak = max(
+                episode_terminal_rotate_max_streak, rotate_streak
             )
             terminal_projection = float(info.get(
                 "terminal_ee_projection", 0.0
@@ -975,6 +1043,8 @@ def main():
                     "terminal_pose_stages={} "
                     "terminal_student_alignment_mean={:.6f} "
                     "terminal_executed_alignment_mean={:.6f} "
+                    "detour_guard={} terminal_rotate={} "
+                    "terminal_rotate_max_streak={} "
                     "reward_terms={}".format(
                         training_episode_index,
                         scenario.get("scenario_id"),
@@ -1038,6 +1108,9 @@ def main():
                         episode_terminal_alignment_sum / float(max(
                             episode_terminal_alignment_count, 1
                         )),
+                        dict(episode_detour_guard_counts),
+                        dict(episode_terminal_rotate_counts),
+                        episode_terminal_rotate_max_streak,
                         dict(episode_reward_terms),
                     )
                 )
@@ -1071,6 +1144,9 @@ def main():
                 episode_terminal_fallbacks = 0
                 episode_terminal_norm_clips = 0
                 episode_invalid_terminal = 0
+                episode_detour_guard_counts.clear()
+                episode_terminal_rotate_counts.clear()
+                episode_terminal_rotate_max_streak = 0
             else:
                 observation = next_observation
 
@@ -1247,6 +1323,25 @@ def main():
                 "overlap_rate": float(rollout_overlap_steps) / float(max(
                     sum(rollout_stage_low_steps.values()), 1
                 )),
+                "detour_guard": {
+                    "options": int(rollout_detour_guard_counts.get(
+                        "options", 0
+                    )),
+                    "applied": int(rollout_detour_guard_counts.get(
+                        "applied", 0
+                    )),
+                    "infeasible": int(rollout_detour_guard_counts.get(
+                        "infeasible", 0
+                    )),
+                    "projection_mean": float(
+                        rollout_detour_guard_counts.get(
+                            "projection_sum", 0.0
+                        ) / float(max(
+                            rollout_detour_guard_counts.get("options", 0),
+                            1,
+                        ))
+                    ),
+                },
             }
             terminal_diagnostics = dict(terminal_contract_counts)
             terminal_diagnostics.update({
@@ -1272,6 +1367,17 @@ def main():
                 "alignment_cosine_mean": (
                     rollout_terminal_alignment_sum / float(max(
                         rollout_terminal_alignment_count, 1
+                    ))
+                ),
+                "rotate_no_progress_streak_max": int(
+                    rollout_terminal_rotate_max_streak
+                ),
+                "rotate_progress_per_step": float(
+                    terminal_contract_counts.get(
+                        "rotate_progress_sum", 0.0
+                    ) / float(max(
+                        terminal_contract_counts.get("rotate_steps", 0),
+                        1,
                     ))
                 ),
             })
@@ -1467,6 +1573,8 @@ def main():
             rollout_terminal_alignment_sum = 0.0
             rollout_terminal_alignment_count = 0
             rollout_terminal_pose_stage_counts.clear()
+            rollout_detour_guard_counts.clear()
+            rollout_terminal_rotate_max_streak = 0
             rollout_stage_mask_counts.clear()
             if (
                     args.checkpoint_interval > 0
@@ -1756,6 +1864,9 @@ def _evaluate_policy(
     terminal_student_alignment_count = 0
     terminal_executed_alignment_sum = 0.0
     terminal_executed_alignment_count = 0
+    detour_guard_counts = collections.Counter()
+    terminal_rotate_counts = collections.Counter()
+    terminal_rotate_max_streak = 0
     stage_mask_counts = collections.Counter()
     for unused_episode in range(int(episodes)):
         observation, scenario = _reset(client, sampler, default_budget)
@@ -1778,6 +1889,9 @@ def _evaluate_policy(
         episode_terminal_student_alignment_count = 0
         episode_terminal_executed_alignment_sum = 0.0
         episode_terminal_executed_alignment_count = 0
+        episode_detour_guard_counts = collections.Counter()
+        episode_terminal_rotate_counts = collections.Counter()
+        episode_terminal_rotate_max_streak = 0
         episode_requested_stages = collections.Counter()
         episode_executed_stages = collections.Counter()
         episode_terminations = collections.Counter()
@@ -1879,6 +1993,60 @@ def _evaluate_policy(
             )
             episode_base_projection_sum += option_base_projection
             episode_ee_projection_sum += option_ee_projection
+            if executed_stage == DETOUR_STAGE:
+                detour_guard_counts["options"] += 1
+                episode_detour_guard_counts["options"] += 1
+                detour_applied = int(bool(info.get(
+                    "detour_guard_applied", False
+                )))
+                detour_infeasible = int(not bool(info.get(
+                    "detour_guard_corridor_feasible", True
+                )))
+                detour_projection = float(info.get(
+                    "detour_guard_projection", 0.0
+                ))
+                detour_guard_counts["applied"] += detour_applied
+                episode_detour_guard_counts["applied"] += detour_applied
+                detour_guard_counts["infeasible"] += detour_infeasible
+                episode_detour_guard_counts[
+                    "infeasible"
+                ] += detour_infeasible
+                detour_guard_counts[
+                    "projection_sum"
+                ] += detour_projection
+                episode_detour_guard_counts[
+                    "projection_sum"
+                ] += detour_projection
+            for rotate_name in (
+                    "steps",
+                    "guarded_steps",
+                    "recovery_steps",
+                    "blocked_steps",
+                    "wrong_direction_steps",
+                    "stall_events"):
+                rotate_value = int(info.get(
+                    "terminal_rotate_{}".format(rotate_name), 0
+                ))
+                terminal_rotate_counts[rotate_name] += rotate_value
+                episode_terminal_rotate_counts[
+                    rotate_name
+                ] += rotate_value
+            rotate_progress = float(info.get(
+                "terminal_rotate_progress", 0.0
+            ))
+            terminal_rotate_counts["progress_sum"] += rotate_progress
+            episode_terminal_rotate_counts[
+                "progress_sum"
+            ] += rotate_progress
+            rotate_streak = int(info.get(
+                "terminal_rotate_no_progress_streak", 0
+            ))
+            terminal_rotate_max_streak = max(
+                terminal_rotate_max_streak, rotate_streak
+            )
+            episode_terminal_rotate_max_streak = max(
+                episode_terminal_rotate_max_streak, rotate_streak
+            )
             episode_terminal_steps += int(
                 executed_stage == TERMINAL_STAGE
             )
@@ -1953,7 +2121,9 @@ def _evaluate_policy(
             "ee_command_projection_mean={:.6f} terminal_steps={} "
             "terminal_projection_mean={:.5f} terminal_pose_stages={} "
             "terminal_student_alignment_mean={:.5f} "
-            "terminal_executed_alignment_mean={:.5f}".format(
+            "terminal_executed_alignment_mean={:.5f} "
+            "detour_guard={} terminal_rotate={} "
+            "terminal_rotate_max_streak={}".format(
                 counts["episodes"],
                 "teacher" if model is None else "student",
                 scenario.get("scenario_id"),
@@ -2010,6 +2180,9 @@ def _evaluate_policy(
                 episode_terminal_executed_alignment_sum / float(max(
                     episode_terminal_executed_alignment_count, 1
                 )),
+                dict(episode_detour_guard_counts),
+                dict(episode_terminal_rotate_counts),
+                episode_terminal_rotate_max_streak,
             )
         )
     return {
@@ -2078,6 +2251,36 @@ def _evaluate_policy(
         "terminal_alignment_cosine_mean": float(
             terminal_executed_alignment_sum
         ) / float(max(terminal_executed_alignment_count, 1)),
+        "detour_guard": {
+            "options": int(detour_guard_counts.get("options", 0)),
+            "applied": int(detour_guard_counts.get("applied", 0)),
+            "infeasible": int(detour_guard_counts.get("infeasible", 0)),
+            "projection_mean": float(detour_guard_counts.get(
+                "projection_sum", 0.0
+            )) / float(max(detour_guard_counts.get("options", 0), 1)),
+        },
+        "terminal_rotation": {
+            "steps": int(terminal_rotate_counts.get("steps", 0)),
+            "guarded_steps": int(terminal_rotate_counts.get(
+                "guarded_steps", 0
+            )),
+            "recovery_steps": int(terminal_rotate_counts.get(
+                "recovery_steps", 0
+            )),
+            "blocked_steps": int(terminal_rotate_counts.get(
+                "blocked_steps", 0
+            )),
+            "wrong_direction_steps": int(terminal_rotate_counts.get(
+                "wrong_direction_steps", 0
+            )),
+            "stall_events": int(terminal_rotate_counts.get(
+                "stall_events", 0
+            )),
+            "no_progress_streak_max": int(terminal_rotate_max_streak),
+            "progress_per_step": float(terminal_rotate_counts.get(
+                "progress_sum", 0.0
+            )) / float(max(terminal_rotate_counts.get("steps", 0), 1)),
+        },
     }
 
 

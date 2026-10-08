@@ -10,6 +10,83 @@ import math
 import numpy as np
 
 
+def project_path_corridor_subgoal(
+        requested_body_xy,
+        waypoint_body_xy,
+        maximum_radius,
+        corridor_half_width,
+        minimum_progress=0.0):
+    """Project a local goal into a progress-making path corridor.
+
+    The corridor is expressed in the robot body frame and points from the
+    current base position to the active path waypoint.  Projection preserves
+    as much of the student's command as possible while forbidding backwards
+    progress, excessive lateral corner cutting, and an over-long local step.
+    It is deliberately independent of ROS so the executable-set contract can
+    be unit tested deterministically.
+    """
+    requested = RuleBasedPlanarSubgoalGenerator._vector(
+        requested_body_xy, 2, "requested_body_xy"
+    )
+    waypoint = RuleBasedPlanarSubgoalGenerator._vector(
+        waypoint_body_xy, 2, "waypoint_body_xy"
+    )
+    maximum_radius = float(maximum_radius)
+    corridor_half_width = float(corridor_half_width)
+    minimum_progress = float(minimum_progress)
+    if maximum_radius <= 0.0:
+        raise ValueError("maximum_radius must be positive")
+    if corridor_half_width < 0.0:
+        raise ValueError("corridor_half_width cannot be negative")
+    if minimum_progress < 0.0:
+        raise ValueError("minimum_progress cannot be negative")
+
+    waypoint_distance = float(np.linalg.norm(waypoint))
+    if waypoint_distance <= 1.0e-12:
+        projected = np.zeros(2, dtype=np.float64)
+        return projected.astype(np.float32), {
+            "applied": bool(np.linalg.norm(requested) > 1.0e-9),
+            "requested_along": 0.0,
+            "executed_along": 0.0,
+            "requested_lateral": 0.0,
+            "executed_lateral": 0.0,
+            "projection": float(np.linalg.norm(requested)),
+        }
+
+    tangent = waypoint / waypoint_distance
+    normal = np.asarray([-tangent[1], tangent[0]], dtype=np.float64)
+    requested_along = float(np.dot(requested, tangent))
+    requested_lateral = float(np.dot(requested, normal))
+    maximum_along = min(waypoint_distance, maximum_radius)
+    executed_along = float(np.clip(
+        requested_along, 0.0, maximum_along
+    ))
+    if float(np.linalg.norm(requested)) > 1.0e-9:
+        executed_along = max(
+            executed_along,
+            min(minimum_progress, maximum_along),
+        )
+    radial_lateral_limit = math.sqrt(max(
+        0.0, maximum_radius ** 2 - executed_along ** 2
+    ))
+    lateral_limit = min(corridor_half_width, radial_lateral_limit)
+    executed_lateral = float(np.clip(
+        requested_lateral, -lateral_limit, lateral_limit
+    ))
+    projected = (
+        executed_along * tangent + executed_lateral * normal
+    )
+    projection = float(np.linalg.norm(projected - requested))
+    return projected.astype(np.float32), {
+        "applied": bool(projection > 1.0e-7),
+        "requested_along": requested_along,
+        "executed_along": executed_along,
+        "requested_lateral": requested_lateral,
+        "executed_lateral": executed_lateral,
+        "projection": projection,
+    }
+
+
 class RuleBasedPlanarSubgoalGenerator(object):
     """Select a short collision-free subgoal from LiDAR angular bins.
 

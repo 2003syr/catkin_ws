@@ -185,6 +185,33 @@ class FusedHighEnvironmentServer(object):
             terminal_student_blend=float(rospy.get_param(
                 "~terminal_student_blend", 0.25
             )),
+            terminal_rotate_minimum_action=float(rospy.get_param(
+                "~terminal_rotate_minimum_action", 0.20
+            )),
+            terminal_rotate_recovery_action=float(rospy.get_param(
+                "~terminal_rotate_recovery_action", 0.80
+            )),
+            terminal_rotate_progress_epsilon=float(rospy.get_param(
+                "~terminal_rotate_progress_epsilon", 0.001
+            )),
+            terminal_rotate_recovery_steps=int(rospy.get_param(
+                "~terminal_rotate_recovery_steps", 8
+            )),
+            terminal_rotate_stall_steps=int(rospy.get_param(
+                "~terminal_rotate_stall_steps", 20
+            )),
+            detour_feasibility_guard=bool(rospy.get_param(
+                "~detour_feasibility_guard", self.basic_hierarchy
+            )),
+            detour_corridor_half_width=float(rospy.get_param(
+                "~detour_corridor_half_width", 0.08
+            )),
+            detour_minimum_progress=float(rospy.get_param(
+                "~detour_minimum_progress", 0.05
+            )),
+            detour_clearance_margin=float(rospy.get_param(
+                "~detour_clearance_margin", 0.04
+            )),
         )
         self.teacher = SafeWaypointHighPolicy(
             self.low_environment,
@@ -317,9 +344,15 @@ class FusedHighEnvironmentServer(object):
                     "terminal_student_blend": float(
                         self.environment.terminal_student_blend
                     ),
+                    "terminal_rotation_contract": (
+                        "progress_monitored_bounded_recovery_v1"
+                    ),
+                    "detour_feasibility_contract": (
+                        "path_corridor_plus_lidar_projection_v1"
+                    ),
                     "diagnostics_contract": (
                         "stage_option_action_projection_safety_"
-                        "terminal_alignment_v3"
+                        "terminal_alignment_rotation_detour_v4"
                     ),
                 })
             if not self.basic_hierarchy:

@@ -28,6 +28,7 @@
         <!-- 0.20 has already passed deterministic validation.  Start the
              remaining stage-gated curriculum at 0.40 and anneal to 1.00. -->
         <arg name="terminal_student_blend" value="0.40" />
+        <arg name="detour_feasibility_guard" value="true" />
         <!-- No hidden teacher-route shaping in the basic high-level task. -->
         <arg name="high_path_progress_weight" value="0.0" />
         <arg name="high_ee_progress_weight" value="10.0" />

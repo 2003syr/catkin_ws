@@ -17,6 +17,10 @@ from hrl.high_level_command import (
     SubgoalType,
 )
 from hrl.high_level_reward import HighLevelReward
+from hrl.rule_based_planar_subgoal import (
+    RuleBasedPlanarSubgoalGenerator,
+    project_path_corridor_subgoal,
+)
 
 
 class HighLevelEnv(object):
@@ -54,7 +58,16 @@ class HighLevelEnv(object):
             enable_route_options=True,
             terminal_option_contract=False,
             terminal_ee_step=0.08,
-            terminal_student_blend=0.25):
+            terminal_student_blend=0.25,
+            terminal_rotate_minimum_action=0.20,
+            terminal_rotate_recovery_action=0.80,
+            terminal_rotate_progress_epsilon=0.001,
+            terminal_rotate_recovery_steps=8,
+            terminal_rotate_stall_steps=20,
+            detour_feasibility_guard=False,
+            detour_corridor_half_width=0.08,
+            detour_minimum_progress=0.05,
+            detour_clearance_margin=0.04):
         self.low_environment = low_environment
         self.low_wrapper = low_wrapper
         self.high_level_interval = int(high_level_interval)
@@ -76,6 +89,27 @@ class HighLevelEnv(object):
         self.terminal_option_contract = bool(terminal_option_contract)
         self.terminal_ee_step = float(terminal_ee_step)
         self.terminal_student_blend = float(terminal_student_blend)
+        self.terminal_rotate_minimum_action = float(
+            terminal_rotate_minimum_action
+        )
+        self.terminal_rotate_recovery_action = float(
+            terminal_rotate_recovery_action
+        )
+        self.terminal_rotate_progress_epsilon = float(
+            terminal_rotate_progress_epsilon
+        )
+        self.terminal_rotate_recovery_steps = int(
+            terminal_rotate_recovery_steps
+        )
+        self.terminal_rotate_stall_steps = int(
+            terminal_rotate_stall_steps
+        )
+        self.detour_feasibility_guard = bool(detour_feasibility_guard)
+        self.detour_corridor_half_width = float(
+            detour_corridor_half_width
+        )
+        self.detour_minimum_progress = float(detour_minimum_progress)
+        self.detour_clearance_margin = float(detour_clearance_margin)
         # The basic hierarchy predicts only a three-way semantic stage and a
         # physical 6-D subgoal.  Route-option memory is intentionally absent.
         # Keep the existing 82-D contract as the default so legacy evaluators
@@ -103,6 +137,21 @@ class HighLevelEnv(object):
                 self.terminal_ee_step <= 0.0
                 or not 0.0 <= self.terminal_student_blend <= 1.0):
             raise ValueError("invalid terminal option parameters")
+        if (
+                not 0.0 <= self.terminal_rotate_minimum_action <= 1.0
+                or not 0.0 <= self.terminal_rotate_recovery_action <= 1.0
+                or self.terminal_rotate_recovery_action
+                < self.terminal_rotate_minimum_action
+                or self.terminal_rotate_progress_epsilon < 0.0
+                or self.terminal_rotate_recovery_steps <= 0
+                or self.terminal_rotate_stall_steps
+                < self.terminal_rotate_recovery_steps):
+            raise ValueError("invalid terminal rotation recovery parameters")
+        if (
+                self.detour_corridor_half_width < 0.0
+                or self.detour_minimum_progress < 0.0
+                or self.detour_clearance_margin < 0.0):
+            raise ValueError("invalid detour feasibility parameters")
         self.previous_base_subgoal_error = np.zeros(3, dtype=np.float32)
         self.previous_ee_subgoal_error = np.zeros(3, dtype=np.float32)
         self.previous_high_action = np.zeros(6, dtype=np.float32)
@@ -116,6 +165,8 @@ class HighLevelEnv(object):
         self.terminal_option_latched = False
         self.terminal_fixed_ee_goal_world = None
         self._last_terminal_guard = {}
+        self._last_detour_guard = {}
+        self._terminal_rotation_state = self._new_terminal_rotation_state()
         self.high_step = 0
         self.episode_done = False
         self.last_info = {}
@@ -152,6 +203,8 @@ class HighLevelEnv(object):
         self.terminal_option_latched = False
         self.terminal_fixed_ee_goal_world = None
         self._last_terminal_guard = {}
+        self._last_detour_guard = {}
+        self._terminal_rotation_state = self._new_terminal_rotation_state()
         self.high_step = 0
         self.episode_done = False
         self.last_info = {}
@@ -175,8 +228,10 @@ class HighLevelEnv(object):
         requested_high_command = command.subgoal.copy()
         if self.enable_route_options:
             self._apply_route_decision(command)
-        routed_high_command = command.subgoal.copy()
         sensor = self._sensor()
+        self.guard_detour_command(command, sensor=sensor)
+        detour_guard = dict(self._last_detour_guard)
+        routed_high_command = command.subgoal.copy()
         terminal_base_hold = self.guard_high_command(
             command, sensor=sensor
         )
@@ -220,11 +275,17 @@ class HighLevelEnv(object):
         start_control_stage = str(option_control_stage)
         option_stage_transitions = 0
         option_safety_history = []
+        rotate_snapshot = self._terminal_rotation_snapshot()
         for _ in range(self.high_level_interval):
             sensor = self._sensor()
             low_action = self.low_wrapper.predict(
                 sensor,
                 ee_rotation_world=self._ee_rotation_world(sensor),
+            )
+            low_action = self._guard_terminal_rotation_action(
+                low_action,
+                command,
+                sensor,
             )
             low_actions.append(np.asarray(low_action).copy())
             if hasattr(self.low_wrapper, "last_residual"):
@@ -266,10 +327,21 @@ class HighLevelEnv(object):
             )
             overlap_steps += int(base_active and arm_active)
             low_steps += 1
+            after_sensor = self._sensor()
+            rotate_stalled = self._update_terminal_rotation_progress(
+                command,
+                sensor,
+                after_sensor,
+                low_action,
+                safe_action,
+            )
             if done:
                 option_termination = "environment_done"
                 break
-            current_error = self.low_wrapper.remaining(self._sensor())
+            if rotate_stalled:
+                option_termination = "rotate_stalled"
+                break
+            current_error = self.low_wrapper.remaining(after_sensor)
             if self._subgoal_is_stable(current_error, command):
                 subgoal_stable_count += 1
             else:
@@ -291,6 +363,8 @@ class HighLevelEnv(object):
                 option_stage_transitions += 1
                 best_error_measure = float(current_error_measure)
                 option_stall_count = 0
+                if current_control_stage != "BASE_ROTATE":
+                    self._clear_terminal_rotation_streak()
                 continue
             if (
                     best_error_measure - current_error_measure
@@ -345,7 +419,9 @@ class HighLevelEnv(object):
             ),
             low_steps=low_steps,
             option_stalled=(
-                option_termination in ("stalled", "safety_risk")
+                option_termination in (
+                    "stalled", "safety_risk", "rotate_stalled"
+                )
             ),
             invalid_terminal=bool(terminal_guard.get(
                 "invalid_terminal", False
@@ -391,14 +467,18 @@ class HighLevelEnv(object):
             max(low_steps, 1)
         )
         self.last_option_stalled = bool(
-            option_termination in ("stalled", "safety_risk")
+            option_termination in (
+                "stalled", "safety_risk", "rotate_stalled"
+            )
         )
         if (
                 int(command.subgoal_type) == SubgoalType.TERMINAL
                 and (
                     subgoal_done
                     or done
-                    or option_termination in ("stalled", "safety_risk")
+                    or option_termination in (
+                        "stalled", "safety_risk", "rotate_stalled"
+                    )
                 )):
             # A terminal target is persistent across ordinary high-level
             # horizons, but a completed/stalled target is replanned toward
@@ -436,6 +516,9 @@ class HighLevelEnv(object):
             )
             low_safety_projection_max = float(np.max(safety_projection))
         info = dict(low_info)
+        rotate_diagnostics = self._terminal_rotation_diagnostics(
+            rotate_snapshot
+        )
         info.update({
             "high_step": int(self.high_step),
             "low_steps": int(low_steps),
@@ -557,6 +640,55 @@ class HighLevelEnv(object):
             "terminal_ee_persistent_target": bool(terminal_guard.get(
                 "ee_persistent_target", False
             )),
+            "detour_guard_applied": bool(detour_guard.get(
+                "applied", False
+            )),
+            "detour_guard_reason": str(detour_guard.get(
+                "reason", "inactive"
+            )),
+            "detour_guard_projection": float(detour_guard.get(
+                "projection", 0.0
+            )),
+            "detour_guard_requested_along": float(detour_guard.get(
+                "requested_along", 0.0
+            )),
+            "detour_guard_executed_along": float(detour_guard.get(
+                "executed_along", 0.0
+            )),
+            "detour_guard_requested_lateral": float(detour_guard.get(
+                "requested_lateral", 0.0
+            )),
+            "detour_guard_executed_lateral": float(detour_guard.get(
+                "executed_lateral", 0.0
+            )),
+            "detour_guard_scan_min": float(detour_guard.get(
+                "scan_min", self.scan_clip
+            )),
+            "detour_guard_corridor_feasible": bool(detour_guard.get(
+                "corridor_feasible", True
+            )),
+            "terminal_rotate_steps": int(rotate_diagnostics["steps"]),
+            "terminal_rotate_guarded_steps": int(
+                rotate_diagnostics["guarded_steps"]
+            ),
+            "terminal_rotate_recovery_steps": int(
+                rotate_diagnostics["recovery_steps"]
+            ),
+            "terminal_rotate_blocked_steps": int(
+                rotate_diagnostics["blocked_steps"]
+            ),
+            "terminal_rotate_wrong_direction_steps": int(
+                rotate_diagnostics["wrong_direction_steps"]
+            ),
+            "terminal_rotate_progress": float(
+                rotate_diagnostics["progress"]
+            ),
+            "terminal_rotate_no_progress_streak": int(
+                rotate_diagnostics["no_progress_streak"]
+            ),
+            "terminal_rotate_stall_events": int(
+                rotate_diagnostics["stall_events"]
+            ),
         })
         if self.enable_route_options:
             info.update({
@@ -758,6 +890,277 @@ class HighLevelEnv(object):
                 ),
             })
         return result
+
+    def guard_detour_command(self, command, sensor=None):
+        """Project unsafe DETOUR goals into the active path corridor.
+
+        The student retains its command whenever it already lies inside the
+        corridor and the complete footprint-inflated LiDAR corridor is free.
+        Otherwise only the executable command is projected; the requested
+        action remains in the PPO rollout for diagnostics and learning.
+        """
+        diagnostics = {
+            "applied": False,
+            "reason": "inactive",
+            "projection": 0.0,
+            "requested_along": 0.0,
+            "executed_along": 0.0,
+            "requested_lateral": 0.0,
+            "executed_lateral": 0.0,
+            "scan_min": self.scan_clip,
+            "corridor_feasible": True,
+        }
+        if (
+                not self.detour_feasibility_guard
+                or int(command.subgoal_type) != SubgoalType.DETOUR):
+            self._last_detour_guard = diagnostics
+            return False
+        path = getattr(self.low_environment, "_path", None)
+        if path is None or bool(getattr(path, "direct_path", False)):
+            diagnostics["reason"] = (
+                "no_path" if path is None else "direct_path"
+            )
+            self._last_detour_guard = diagnostics
+            return False
+        if sensor is None:
+            sensor = self._sensor()
+
+        base_pose = self.low_wrapper.base_pose(sensor)
+        waypoint_world = np.asarray(
+            path.current_goal_xy, dtype=np.float64
+        )
+        waypoint_body = rotate_xy(
+            waypoint_world - base_pose[0:2], -base_pose[2]
+        )
+        requested = np.asarray(command.base_goal[0:2], dtype=np.float64)
+        maximum_radius = float(np.max(self.action_limits[0:2]))
+        path_clearance = float(getattr(
+            path, "clearance", self.detour_corridor_half_width
+        ))
+        corridor_half_width = min(
+            self.detour_corridor_half_width,
+            max(path_clearance, 0.0),
+        )
+        projected, corridor_info = project_path_corridor_subgoal(
+            requested,
+            waypoint_body,
+            maximum_radius=maximum_radius,
+            corridor_half_width=corridor_half_width,
+            minimum_progress=self.detour_minimum_progress,
+        )
+        diagnostics.update(corridor_info)
+        diagnostics["reason"] = (
+            "path_corridor" if corridor_info["applied"] else "unchanged"
+        )
+
+        scan = self._scan()
+        diagnostics["scan_min"] = float(np.min(scan))
+        generator = RuleBasedPlanarSubgoalGenerator(
+            scan_bin_count=self.SCAN_DIM,
+            minimum_radius=min(
+                max(self.detour_minimum_progress, 0.02), maximum_radius
+            ),
+            maximum_radius=maximum_radius,
+            clearance_margin=self.detour_clearance_margin,
+            footprint_half_length=float(getattr(
+                path, "base_half_length", 0.56
+            )),
+            footprint_half_width=float(getattr(
+                path, "base_half_width", 0.10
+            )),
+        )
+        projected_norm = float(np.linalg.norm(projected))
+        corridor_feasible = True
+        if projected_norm > 1.0e-9:
+            corridor_feasible = generator.corridor_heading_feasible(
+                scan,
+                math.atan2(projected[1], projected[0]),
+                projected_norm,
+            )
+        diagnostics["corridor_feasible"] = bool(corridor_feasible)
+        if not corridor_feasible:
+            path_index = int(getattr(path, "index", 0))
+            committed_side = (
+                float(getattr(path, "side", 0.0))
+                if path_index <= 3 else 0.0
+            )
+            lidar_goal, lidar_info = generator.select(
+                waypoint_body,
+                scan,
+                preferred_turn_sign=committed_side,
+                committed_turn_sign=committed_side,
+                raw_scan_ranges=scan,
+            )
+            projected = np.asarray(lidar_goal, dtype=np.float32)
+            diagnostics["reason"] = str(lidar_info.get(
+                "reason", "lidar_corridor_projection"
+            ))
+
+        projection = float(np.linalg.norm(projected - requested))
+        diagnostics["projection"] = projection
+        diagnostics["applied"] = bool(projection > 1.0e-7)
+        if diagnostics["applied"]:
+            base_goal = command.base_goal.copy()
+            base_goal[0:2] = projected
+            if float(np.linalg.norm(projected)) > 1.0e-9:
+                base_goal[2] = float(np.clip(
+                    math.atan2(projected[1], projected[0]),
+                    -self.action_limits[2],
+                    self.action_limits[2],
+                ))
+            self._set_command_goal(command, base_goal=base_goal)
+            self._append_reason(command, "detour_feasibility_projection")
+        self._last_detour_guard = diagnostics
+        return bool(diagnostics["applied"])
+
+    @staticmethod
+    def _new_terminal_rotation_state():
+        return {
+            "steps": 0,
+            "guarded_steps": 0,
+            "recovery_steps": 0,
+            "blocked_steps": 0,
+            "wrong_direction_steps": 0,
+            "progress": 0.0,
+            "stall_events": 0,
+            "no_progress_streak": 0,
+            "recovery_active": False,
+            "stall_latched": False,
+            "step_active": False,
+            "commanded_yaw": 0.0,
+        }
+
+    def _terminal_rotation_snapshot(self):
+        state = self._terminal_rotation_state
+        return dict(
+            (name, state[name]) for name in (
+                "steps",
+                "guarded_steps",
+                "recovery_steps",
+                "blocked_steps",
+                "wrong_direction_steps",
+                "progress",
+                "stall_events",
+            )
+        )
+
+    def _terminal_rotation_diagnostics(self, snapshot):
+        state = self._terminal_rotation_state
+        result = {}
+        for name in (
+                "steps",
+                "guarded_steps",
+                "recovery_steps",
+                "blocked_steps",
+                "wrong_direction_steps",
+                "stall_events"):
+            result[name] = int(state[name] - snapshot[name])
+        result["progress"] = float(
+            state["progress"] - snapshot["progress"]
+        )
+        result["no_progress_streak"] = int(
+            state["no_progress_streak"]
+        )
+        return result
+
+    def _clear_terminal_rotation_streak(self):
+        state = self._terminal_rotation_state
+        state["no_progress_streak"] = 0
+        state["recovery_active"] = False
+        state["stall_latched"] = False
+        state["step_active"] = False
+        state["commanded_yaw"] = 0.0
+
+    def _guard_terminal_rotation_action(self, action, command, sensor):
+        """Make BASE_ROTATE pure, directed, and strong enough to observe."""
+        result = np.asarray(action, dtype=np.float32).copy()
+        if result.shape != (8,):
+            raise ValueError(
+                "low action must have shape (8,), got {}".format(
+                    result.shape
+                )
+            )
+        state = self._terminal_rotation_state
+        if self._terminal_control_stage(command) != "BASE_ROTATE":
+            self._clear_terminal_rotation_streak()
+            return result
+
+        unused_distance, yaw_error = self._final_base_errors(sensor)
+        del unused_distance
+        original = result.copy()
+        result[0] = 0.0
+        result[2:8] = 0.0
+        if abs(yaw_error) <= self.yaw_subgoal_tolerance:
+            result[1] = 0.0
+        else:
+            magnitude = max(
+                abs(float(result[1])),
+                self.terminal_rotate_minimum_action,
+            )
+            recovery_active = bool(
+                state["no_progress_streak"]
+                >= self.terminal_rotate_recovery_steps
+            )
+            if recovery_active:
+                magnitude = max(
+                    magnitude, self.terminal_rotate_recovery_action
+                )
+                state["recovery_steps"] += 1
+            state["recovery_active"] = recovery_active
+            result[1] = float(np.sign(yaw_error)) * min(magnitude, 1.0)
+        if float(np.max(np.abs(result - original))) > 1.0e-7:
+            state["guarded_steps"] += 1
+        state["step_active"] = True
+        state["commanded_yaw"] = float(result[1])
+        return result
+
+    def _update_terminal_rotation_progress(
+            self,
+            command,
+            before_sensor,
+            after_sensor,
+            commanded_action,
+            safe_action):
+        state = self._terminal_rotation_state
+        if not state.get("step_active", False):
+            return False
+        state["step_active"] = False
+        unused_distance, before_error = self._final_base_errors(
+            before_sensor
+        )
+        del unused_distance
+        unused_distance, after_error = self._final_base_errors(after_sensor)
+        del unused_distance
+        progress = abs(float(before_error)) - abs(float(after_error))
+        state["steps"] += 1
+        state["progress"] += float(progress)
+        commanded_yaw = float(np.asarray(commanded_action)[1])
+        safe_yaw = float(np.asarray(safe_action)[1])
+        if abs(commanded_yaw) > 0.10 and abs(safe_yaw) < 0.05:
+            state["blocked_steps"] += 1
+        if progress < -self.terminal_rotate_progress_epsilon:
+            state["wrong_direction_steps"] += 1
+        if progress >= self.terminal_rotate_progress_epsilon:
+            state["no_progress_streak"] = 0
+            state["recovery_active"] = False
+            state["stall_latched"] = False
+        else:
+            state["no_progress_streak"] += 1
+
+        still_rotating = bool(
+            self._terminal_control_stage(command) == "BASE_ROTATE"
+        )
+        stalled = bool(
+            still_rotating
+            and state["no_progress_streak"]
+            >= self.terminal_rotate_stall_steps
+        )
+        if stalled and not state["stall_latched"]:
+            state["stall_events"] += 1
+            state["stall_latched"] = True
+        if not still_rotating:
+            self._clear_terminal_rotation_streak()
+        return stalled
 
     def guard_high_command(self, command, sensor=None, update_latch=True):
         """Apply the executable-set contract for the terminal option.
@@ -1116,7 +1519,19 @@ class HighLevelEnv(object):
                     self.base_subgoal_tolerance
                 )
             if stage == "BASE_ROTATE":
-                return abs(float(remaining[2])) / (
+                # The fixed subgoal yaw is clipped to the per-option action
+                # limit.  For large terminal yaw errors it can be reached
+                # before the true final pose, after which the clipped error
+                # grows in the opposite direction and falsely looks stalled.
+                # Monitor the authoritative final-pose yaw instead.
+                if self.low_environment.last_sensor_observation is None:
+                    final_yaw_error = float(remaining[2])
+                else:
+                    unused_distance, final_yaw_error = (
+                        self._final_base_errors(self._sensor())
+                    )
+                    del unused_distance
+                return abs(float(final_yaw_error)) / (
                     self.yaw_subgoal_tolerance
                 )
             if stage in ("ARM_REACH", "ALIGNED"):

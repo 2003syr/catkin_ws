@@ -36,6 +36,7 @@ from training.hrl4in_low_actor_critic import (  # noqa: E402
 
 
 STAGE_NAMES = ("DIRECT", "DETOUR", "TERMINAL")
+DETOUR_STAGE = 1
 TERMINAL_STAGE = 2
 
 
@@ -167,6 +168,9 @@ def main():
     terminal_alignment_sum = 0.0
     terminal_alignment_count = 0
     terminal_pose_stage_counts = collections.Counter()
+    detour_guard_counts = collections.Counter()
+    terminal_rotate_counts = collections.Counter()
+    terminal_rotate_max_streak = 0
     stage_mask_counts = collections.Counter()
     try:
         for episode_index in range(len(scenarios)):
@@ -187,6 +191,9 @@ def main():
             episode_terminal_alignment_sum = 0.0
             episode_terminal_alignment_count = 0
             episode_terminal_pose_stage_counts = collections.Counter()
+            episode_detour_guard_counts = collections.Counter()
+            episode_terminal_rotate_counts = collections.Counter()
+            episode_terminal_rotate_max_streak = 0
             episode_requested_stages = collections.Counter()
             episode_executed_stages = collections.Counter()
             episode_terminations = collections.Counter()
@@ -315,6 +322,66 @@ def main():
                 )
                 episode_base_projection_sum += step_base_projection
                 episode_ee_projection_sum += step_ee_projection
+                if executed_stage == DETOUR_STAGE:
+                    detour_guard_counts["options"] += 1
+                    episode_detour_guard_counts["options"] += 1
+                    detour_applied = int(bool(info.get(
+                        "detour_guard_applied", False
+                    )))
+                    detour_infeasible = int(not bool(info.get(
+                        "detour_guard_corridor_feasible", True
+                    )))
+                    detour_projection = float(info.get(
+                        "detour_guard_projection", 0.0
+                    ))
+                    detour_guard_counts["applied"] += detour_applied
+                    episode_detour_guard_counts[
+                        "applied"
+                    ] += detour_applied
+                    detour_guard_counts[
+                        "infeasible"
+                    ] += detour_infeasible
+                    episode_detour_guard_counts[
+                        "infeasible"
+                    ] += detour_infeasible
+                    detour_guard_counts[
+                        "projection_sum"
+                    ] += detour_projection
+                    episode_detour_guard_counts[
+                        "projection_sum"
+                    ] += detour_projection
+                for rotate_name in (
+                        "steps",
+                        "guarded_steps",
+                        "recovery_steps",
+                        "blocked_steps",
+                        "wrong_direction_steps",
+                        "stall_events"):
+                    rotate_value = int(info.get(
+                        "terminal_rotate_{}".format(rotate_name), 0
+                    ))
+                    terminal_rotate_counts[rotate_name] += rotate_value
+                    episode_terminal_rotate_counts[
+                        rotate_name
+                    ] += rotate_value
+                rotate_progress = float(info.get(
+                    "terminal_rotate_progress", 0.0
+                ))
+                terminal_rotate_counts[
+                    "progress_sum"
+                ] += rotate_progress
+                episode_terminal_rotate_counts[
+                    "progress_sum"
+                ] += rotate_progress
+                rotate_streak = int(info.get(
+                    "terminal_rotate_no_progress_streak", 0
+                ))
+                terminal_rotate_max_streak = max(
+                    terminal_rotate_max_streak, rotate_streak
+                )
+                episode_terminal_rotate_max_streak = max(
+                    episode_terminal_rotate_max_streak, rotate_streak
+                )
                 for reason, count in info.get("safety_reasons", {}).items():
                     safety_reasons[str(reason)] += int(count)
                 reward_terms = info.get("high_reward", {}).get("terms", {})
@@ -468,7 +535,9 @@ def main():
                 "ee_command_projection_mean={:.6f} "
                 "terminal_pose_stages={} "
                 "terminal_student_alignment_mean={:.6f} "
-                "terminal_executed_alignment_mean={:.6f} reward={:.4f} "
+                "terminal_executed_alignment_mean={:.6f} "
+                "detour_guard={} terminal_rotate={} "
+                "terminal_rotate_max_streak={} reward={:.4f} "
                 "reward_terms={}".format(
                     episode_index + 1,
                     dict(episode_requested_stages),
@@ -512,6 +581,9 @@ def main():
                     episode_terminal_alignment_sum / float(max(
                         episode_terminal_alignment_count, 1
                     )),
+                    dict(episode_detour_guard_counts),
+                    dict(episode_terminal_rotate_counts),
+                    episode_terminal_rotate_max_streak,
                     episode_reward,
                     dict(episode_reward_terms),
                 )
@@ -558,6 +630,36 @@ def main():
             totals["terminal_progress_fallbacks"]
         ),
         "terminal_norm_clips": int(totals["terminal_norm_clips"]),
+        "detour_guard": {
+            "options": int(detour_guard_counts.get("options", 0)),
+            "applied": int(detour_guard_counts.get("applied", 0)),
+            "infeasible": int(detour_guard_counts.get("infeasible", 0)),
+            "projection_mean": float(detour_guard_counts.get(
+                "projection_sum", 0.0
+            )) / float(max(detour_guard_counts.get("options", 0), 1)),
+        },
+        "terminal_rotation": {
+            "steps": int(terminal_rotate_counts.get("steps", 0)),
+            "guarded_steps": int(terminal_rotate_counts.get(
+                "guarded_steps", 0
+            )),
+            "recovery_steps": int(terminal_rotate_counts.get(
+                "recovery_steps", 0
+            )),
+            "blocked_steps": int(terminal_rotate_counts.get(
+                "blocked_steps", 0
+            )),
+            "wrong_direction_steps": int(terminal_rotate_counts.get(
+                "wrong_direction_steps", 0
+            )),
+            "stall_events": int(terminal_rotate_counts.get(
+                "stall_events", 0
+            )),
+            "no_progress_streak_max": int(terminal_rotate_max_streak),
+            "progress_per_step": float(terminal_rotate_counts.get(
+                "progress_sum", 0.0
+            )) / float(max(terminal_rotate_counts.get("steps", 0), 1)),
+        },
         "stage_counts": dict(stage_counts),
         "requested_stage_counts": dict(requested_stage_counts),
         "executed_stage_counts": dict(executed_stage_counts),
